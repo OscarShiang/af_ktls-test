@@ -2,3 +2,4 @@ build
 .cproject
 .csettings/
 .project
+.settings

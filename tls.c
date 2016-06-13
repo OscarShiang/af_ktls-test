@@ -40,8 +40,6 @@ typedef void (* tls_test)(int opfd, void *data);
 #define u64 uint64_t
 #define u32 uint32_t
 #define u8 uint8_t
-pthread_mutex_t server_lock;
-bool server_ready;
 typedef struct {
     u64 hi, lo;
 } u128;
@@ -223,10 +221,7 @@ void LoadCertificates(SSL_CTX* ctx, char const *CertFile, char const *KeyFile) {
 }
 
 void main_test_client(tls_test test) {
-    pthread_mutex_lock(&server_lock);
-    while(!server_ready)
-        pthread_cond_wait(&server_cond, &server_lock);
-    pthread_mutex_unlock(&server_lock);
+ 
     SSL_CTX *ctx;
     SSL *ssl;
     int server = 0;
@@ -319,7 +314,6 @@ void *Servlet(void *args)/* Serve the connection -- threadable */
             SSL_write(ssl, buf, bytes);
             bytes_recv += bytes;
         } while (bytes > 0);
-        //TODO: Not checking file content?
     }
     free(args);
     sd = SSL_get_fd(ssl);/* get socket connection */
@@ -337,10 +331,7 @@ void main_server() {
     SSL_CTX_set_cipher_list(ctx, "ECDH-ECDSA-AES128-GCM-SHA256");
 
     int server = OpenListener(port);/* create server socket */
-    pthread_mutex_lock(&server_lock);
-    server_ready = true;
-    pthread_cond_broadcast(&server_cond);
-    pthread_mutex_unlock(&server_lock);
+    sem_post(&server_sem);
     while (1) {
         struct sockaddr_in addr;
         unsigned int len = sizeof(addr);

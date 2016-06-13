@@ -4,7 +4,7 @@
 #include <semaphore.h>
 #include "lib.c"
 #define TESTING
-pthread_cond_t server_cond;
+sem_t server_sem;
 #include "tls.c"
 
 /* Sends a short message using send(), and checks its return value */
@@ -289,6 +289,20 @@ void test_recvmsg_multiple(int opfd, void *unused) {
         free(iov_base[i]);
 }
 
+void test_recv_partial(int opfd, void *unused) {
+    char const *test_str = "test_read_partial";
+    char const *test_str_first = "test_read";
+    char const *test_str_second = "_partial";
+    int send_len = strlen(test_str) + 1;
+    char buf[4096];
+    memset(buf, 0, 4096);
+    ASSERT_EQ(send(opfd, test_str, send_len, 0), send_len)
+        << "Incorrect number of bytes sent" ;
+    ASSERT_NE(recv(opfd, buf, strlen(test_str_first), 0), -1) << "1st half of recv failed";
+    ASSERT_STREQ(test_str_first, buf);
+    ASSERT_NE(recv(opfd, buf, strlen(test_str_second), 0), -1) << "2nd half of recv failed";
+    ASSERT_STREQ(test_str_second, buf);
+}
 pthread_t server_thread;
 using namespace std;
 class MyTestSuite: public testing::Test {
@@ -299,9 +313,10 @@ protected:
         ERR_load_BIO_strings();
         ERR_load_crypto_strings();
         SSL_load_error_strings();/* load all error messages */
-        pthread_cond_init(&server_cond, nullptr);
+        sem_init(&server_sem, 0, 0);
         thread t1(main_server);
         t1.detach();
+        sem_wait(&server_sem);
     }
     virtual void SetUp() {
     }
@@ -387,9 +402,14 @@ TEST_F(MyTestSuite, recvmsg)
     main_test_client(test_recvmsg_single);
 }
 
-TEST_F(MyTestSuite, recvmsg_multiple)
+TEST_F(MyTestSuite, DISABLED_recvmsg_multiple)
 {
     main_test_client(test_recvmsg_multiple);
+}
+
+TEST_F(MyTestSuite, DISABLED_recv_partial)
+{
+    main_test_client(test_recv_partial);
 }
 
 TEST_F(MyTestSuite, DISABLED_getsockopt)
