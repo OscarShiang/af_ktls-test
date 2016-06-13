@@ -144,7 +144,7 @@ struct servlet_args {
 void main_server(void);
 void main_test_client(tls_test test);
 
-int create_socket() {
+int create_socket(int port) {
     int sockfd;
     struct sockaddr_in6 dest_addr;
 
@@ -230,7 +230,7 @@ void main_test_client(tls_test test) {
     SSL_CTX_set_options(ctx, SSL_OP_NO_SSLv2);
     SSL_CTX_set_cipher_list(ctx, "ECDH-ECDSA-AES128-GCM-SHA256");
     ssl = SSL_new(ctx);
-    server = create_socket();
+    server = create_socket(port);
     SSL_set_fd(ssl, server);
     ASSERT_EQ(SSL_connect(ssl), 1);
     int opfd = socket(AF_KTLS, SOCK_STREAM, 0);
@@ -329,9 +329,11 @@ void main_server() {
     ctx = InitServerCTX();/* initialize SSL */
     LoadCertificates(ctx, "ca.crt", "ca.pem");/* load certs */
     SSL_CTX_set_cipher_list(ctx, "ECDH-ECDSA-AES128-GCM-SHA256");
-
     int server = OpenListener(port);/* create server socket */
-    sem_post(&server_sem);
+    pthread_mutex_lock(&server_lock);
+    server_up++;
+    pthread_cond_signal(&server_cond);
+    pthread_mutex_unlock(&server_lock);
     while (1) {
         struct sockaddr_in addr;
         unsigned int len = sizeof(addr);
@@ -348,4 +350,45 @@ void main_server() {
     close(server);/* close server socket */
     SSL_CTX_free(ctx);/* release context */
 
+}
+
+void ref_test_client(tls_test test) {
+ 
+    int client = create_socket(port+1);
+    test(client, NULL);
+    close(client);
+}
+
+void *ref_Servlet(void *args) {
+    struct servlet_args *sargs = (struct servlet_args *) args;
+    int client = sargs->client; 
+    char buf[4096 * 16];
+    int bytes;
+
+    do {
+        bytes = recv(client, buf, sizeof(buf), 0);
+        if (bytes < 0)
+            break;
+        send(client, buf, bytes, 0);
+    } while (bytes > 0);
+   
+    free(args);
+    close(client);/* close connection */
+    return NULL;
+}
+void ref_server() {
+    int server = OpenListener(port+1);
+    pthread_mutex_lock(&server_lock);
+    server_up++;
+    pthread_cond_signal(&server_cond);
+    pthread_mutex_unlock(&server_lock);
+    while (1) {
+        int client = accept(server, NULL, NULL);
+        pthread_t pthread;
+        struct servlet_args *args = (struct servlet_args *) malloc(
+                        sizeof(struct servlet_args));
+        args->client = client;
+        pthread_create(&pthread, NULL, ref_Servlet, args);
+        
+    }
 }

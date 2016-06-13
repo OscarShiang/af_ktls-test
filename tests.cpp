@@ -4,7 +4,9 @@
 #include <semaphore.h>
 #include "lib.c"
 #define TESTING
-sem_t server_sem;
+pthread_cond_t server_cond;
+pthread_mutex_t server_lock;
+int server_up;
 #include "tls.c"
 
 /* Sends a short message using send(), and checks its return value */
@@ -313,10 +315,17 @@ protected:
         ERR_load_BIO_strings();
         ERR_load_crypto_strings();
         SSL_load_error_strings();/* load all error messages */
-        sem_init(&server_sem, 0, 0);
+        server_up = -2;
+        pthread_cond_init(&server_cond, nullptr);
+        pthread_mutex_init(&server_lock, nullptr);
         thread t1(main_server);
         t1.detach();
-        sem_wait(&server_sem);
+        thread t2(ref_server);
+        t2.detach();
+        pthread_mutex_lock(&server_lock);
+        while (server_up < 0)
+            pthread_cond_wait(&server_cond, &server_lock);
+        pthread_mutex_unlock(&server_lock);
     }
     virtual void SetUp() {
     }
@@ -422,4 +431,18 @@ TEST_F(MyTestSuite, DISABLED_setsockopt)
 {
     ASSERT_EQ(1, 0)
         ;
+}
+
+TEST_F(MyTestSuite, ref)
+{
+    ref_test_client(test_send_small_encrypt);
+    ref_test_client(test_sendfile_small_encrypt);
+    ref_test_client(test_recv_small_decrypt);
+    ref_test_client(test_sendmsg_single);
+    ref_test_client(test_sendmsg_multiple);
+    ref_test_client(test_sendmsg_multiple_scattered);
+    ref_test_client(test_sendmsg_multiple_stress);
+    ref_test_client(test_recvmsg_single);
+    ref_test_client(test_recvmsg_multiple);
+    ref_test_client(test_recv_partial);
 }
