@@ -1,3 +1,5 @@
+#include "lib.h"
+
 void gen_random(char *s, const int len) {
     static const char alphanum[] =
         "0123456789"

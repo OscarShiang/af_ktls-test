@@ -1,41 +1,11 @@
-#include <fcntl.h>
-#include <stdio.h>
-#include <stdbool.h>
-#include <sys/socket.h>
-#include <unistd.h>
-#include <memory.h>
-#include <stdlib.h>
-#include <errno.h>
-#include <stdint.h>
-#include <assert.h>
-#include <linux/if_alg.h>
-#include <pthread.h>
-#include <time.h>
-#include <sys/times.h>
-#include <sys/sendfile.h>
-#include <sys/types.h>
-#include <sys/stat.h>
-#include <resolv.h>
-#include <netdb.h>
-#include <netinet/in.h>
-#include <arpa/inet.h>
-#include <string.h>
-#include <openssl/bio.h>
-#include <openssl/ssl.h>
-#include <openssl/err.h>
-#include <openssl/pem.h>
-#include <openssl/x509.h>
-#include <openssl/x509_vfy.h>
-#include <openssl/modes.h>
-#include <openssl/aes.h>
-#include <gtest/gtest.h>
+#include "tls.h"
 
 int bytes_recv;
 int port = 8000;
 char* test_data;
 int test_type;
 unsigned int buf_size;
-typedef void (* tls_test)(int opfd, void *data);
+
 /* Opaque OpenSSL structures to fetch keys */
 #define u64 uint64_t
 #define u32 uint32_t
@@ -141,8 +111,6 @@ struct servlet_args {
     SSL *ssl;
 };
 
-void main_server(void);
-void main_test_client(tls_test test);
 
 int create_socket(int port) {
     int sockfd;
@@ -221,7 +189,7 @@ void LoadCertificates(SSL_CTX* ctx, char const *CertFile, char const *KeyFile) {
 }
 
 void main_test_client(tls_test test) {
- 
+
     SSL_CTX *ctx;
     SSL *ssl;
     int server = 0;
@@ -232,14 +200,12 @@ void main_test_client(tls_test test) {
     ssl = SSL_new(ctx);
     server = create_socket(port);
     SSL_set_fd(ssl, server);
-    ASSERT_EQ(SSL_connect(ssl), 1);
+    SSL_connect(ssl);
     int opfd = socket(AF_KTLS, SOCK_STREAM, 0);
-    ASSERT_NE(opfd, -1) << "FAILED opening AF_KTLS socket, "
-    "check that the module is inserted!";
     struct sockaddr_ktls sa = { .sa_cipher = KTLS_CIPHER_AES_GCM_128,
-            .sa_socket = server, .sa_version = short(KTLS_VERSION_1_2)};
+            .sa_socket = server, .sa_version = KTLS_VERSION_1_2};
 
-    ASSERT_NE(bind(opfd, (struct sockaddr *) &sa, sizeof(sa)), -1);
+    bind(opfd, (struct sockaddr *) &sa, sizeof(sa));
     EVP_CIPHER_CTX * writeCtx = ssl->enc_write_ctx;
     EVP_CIPHER_CTX * readCtx = ssl->enc_read_ctx;
 
@@ -353,7 +319,7 @@ void main_server() {
 }
 
 void ref_test_client(tls_test test) {
- 
+
     int client = create_socket(port+1);
     test(client, NULL);
     close(client);
@@ -361,7 +327,7 @@ void ref_test_client(tls_test test) {
 
 void *ref_Servlet(void *args) {
     struct servlet_args *sargs = (struct servlet_args *) args;
-    int client = sargs->client; 
+    int client = sargs->client;
     char buf[4096 * 16];
     int bytes;
 
@@ -371,7 +337,7 @@ void *ref_Servlet(void *args) {
             break;
         send(client, buf, bytes, 0);
     } while (bytes > 0);
-   
+
     free(args);
     close(client);/* close connection */
     return NULL;
@@ -389,6 +355,6 @@ void ref_server() {
                         sizeof(struct servlet_args));
         args->client = client;
         pthread_create(&pthread, NULL, ref_Servlet, args);
-        
+
     }
 }

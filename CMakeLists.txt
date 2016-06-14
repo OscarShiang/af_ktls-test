@@ -7,7 +7,7 @@ include_directories(${GTEST_INCLUDE_DIRS})
 set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -std=c++11")
 
 # Link runTests with what we want to test and the GTest and pthread library
-add_executable(runTests main.cpp tests.cpp)
+add_executable(runTests main.cpp tests.cpp lib.c tls.c)
 target_link_libraries(runTests ${GTEST_LIBRARIES} pthread ssl crypto)
 
 add_custom_command(TARGET runTests PRE_BUILD
