@@ -47,9 +47,10 @@ pthread_cond_t server_cond;
 pthread_mutex_t server_lock;
 int server_up;
 
-void main_test_client(tls_test test);
-void ref_test_client(tls_test test);
+void main_test_client(tls_test);
+void ref_test_client(tls_test);
 void main_server(void);
 void ref_server(void);
+char * prepare_msghdr(struct msghdr *);
 
 #endif /* TLS_H_ */

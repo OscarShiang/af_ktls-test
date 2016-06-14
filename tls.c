@@ -358,3 +358,27 @@ void ref_server() {
 
     }
 }
+
+char *prepare_msghdr(struct msghdr *msg) {
+    memset(msg, 0, sizeof(*msg));
+    // Load up the cmsg data
+    struct cmsghdr *header = NULL;
+    uint32_t *type = NULL;
+    /* IV data */
+    struct af_alg_iv *alg_iv = NULL;
+    int ivsize = 12;
+    uint32_t iv_msg_size = CMSG_SPACE(sizeof(*alg_iv) + ivsize);
+
+    /* AEAD data */
+    uint32_t *assoclen = NULL;
+    uint32_t assoc_msg_size = CMSG_SPACE(sizeof(*assoclen));
+
+    uint32_t bufferlen = CMSG_SPACE(sizeof(*type)) + /*Encryption/Decryption*/
+    iv_msg_size + /* IV */
+    assoc_msg_size;/* AEAD associated data size */
+
+    char* buffer = (char *) calloc(1, bufferlen);
+    msg->msg_control = buffer;
+    msg->msg_controllen = bufferlen;
+    return buffer;
+}

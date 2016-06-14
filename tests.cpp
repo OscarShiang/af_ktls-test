@@ -39,28 +39,10 @@ void test_recv_small_decrypt(int opfd, void *unused) {
 }
 
 void test_sendmsg_single(int opfd, void *unused) {
-    // Load up the cmsg data.
-    struct cmsghdr *header = nullptr;
-    uint32_t *type = nullptr;
     struct msghdr msg;
+    char *buffer = prepare_msghdr(&msg);
 
-    /* IV data */
-    struct af_alg_iv *alg_iv = nullptr;
-    int ivsize = 12;
-    uint32_t iv_msg_size = CMSG_SPACE(sizeof(*alg_iv) + ivsize);
-
-    /* AEAD data */
-    uint32_t *assoclen = nullptr;
-    uint32_t assoc_msg_size = CMSG_SPACE(sizeof(*assoclen));
-
-    uint32_t bufferlen = CMSG_SPACE(sizeof(*type)) + /*Encryption/Decryption*/
-    iv_msg_size + /* IV */
-    assoc_msg_size;/* AEAD associated data size */
-
-    memset(&msg, 0, sizeof(msg));
-    char* buffer = (char *) calloc(1, bufferlen);
-    msg.msg_control = buffer;
-    msg.msg_controllen = bufferlen;
+    //Load up the send data
     char const *test_str = "test_sendmsg";
     size_t send_len = strlen(test_str) + 1;
     struct iovec vec = { (void *) test_str, send_len };
@@ -76,7 +58,7 @@ void test_sendmsg_single(int opfd, void *unused) {
 
 void test_sendmsg_multiple(int opfd, void *unused) {
     struct msghdr msg;
-    memset(&msg, 0, sizeof(msg));
+    char *buffer = prepare_msghdr(&msg);
 
     //Load up the send data
     int iov_len = 5;
@@ -93,26 +75,6 @@ void test_sendmsg_multiple(int opfd, void *unused) {
     }
     msg.msg_iov = vec;
     msg.msg_iovlen = iov_len;
-
-    // Load up the cmsg data
-    struct cmsghdr *header = nullptr;
-    uint32_t *type = nullptr;
-    /* IV data */
-    struct af_alg_iv *alg_iv = nullptr;
-    int ivsize = 12;
-    uint32_t iv_msg_size = CMSG_SPACE(sizeof(*alg_iv) + ivsize);
-
-    /* AEAD data */
-    uint32_t *assoclen = nullptr;
-    uint32_t assoc_msg_size = CMSG_SPACE(sizeof(*assoclen));
-
-    uint32_t bufferlen = CMSG_SPACE(sizeof(*type)) + /*Encryption/Decryption*/
-    iv_msg_size + /* IV */
-    assoc_msg_size;/* AEAD associated data size */
-
-    char* buffer = (char *) calloc(1, bufferlen);
-    msg.msg_control = buffer;
-    msg.msg_controllen = bufferlen;
 
     EXPECT_EQ(sendmsg(opfd, &msg, 0), total_len)
         << "Incorrect number of bytes sent" ;
@@ -133,7 +95,7 @@ void test_sendmsg_multiple(int opfd, void *unused) {
  */
 void test_sendmsg_multiple_scattered(int opfd, void *unused) {
     struct msghdr msg;
-    memset(&msg, 0, sizeof(msg));
+    char *buffer = prepare_msghdr(&msg);
 
     //Load up the send data
     int iov_len = 3;
@@ -156,26 +118,6 @@ void test_sendmsg_multiple_scattered(int opfd, void *unused) {
     msg.msg_iov = vec;
     msg.msg_iovlen = iov_len;
 
-    // Load up the cmsg data
-    struct cmsghdr *header = nullptr;
-    uint32_t *type = nullptr;
-    /* IV data */
-    struct af_alg_iv *alg_iv = nullptr;
-    int ivsize = 12;
-    uint32_t iv_msg_size = CMSG_SPACE(sizeof(*alg_iv) + ivsize);
-
-    /* AEAD data */
-    uint32_t *assoclen = nullptr;
-    uint32_t assoc_msg_size = CMSG_SPACE(sizeof(*assoclen));
-
-    uint32_t bufferlen = CMSG_SPACE(sizeof(*type)) + /*Encryption/Decryption*/
-    iv_msg_size + /* IV */
-    assoc_msg_size;/* AEAD associated data size */
-
-    char* buffer = (char *) calloc(1, bufferlen);
-    msg.msg_control = buffer;
-    msg.msg_controllen = bufferlen;
-
     EXPECT_EQ(sendmsg(opfd, &msg, 0), total_len)
         << "Incorrect number of bytes sent" ;
     char buf[4096];
@@ -193,7 +135,7 @@ void test_sendmsg_multiple_scattered(int opfd, void *unused) {
 /* Send 1<<14 amount of data using 1024 (max) iovecs */
 void test_sendmsg_multiple_stress(int opfd, void *unused) {
     struct msghdr msg;
-    memset(&msg, 0, sizeof(msg));
+    char *buffer = prepare_msghdr(&msg);
 
     //Load up the send data
     int iov_len = 1024;
@@ -210,26 +152,6 @@ void test_sendmsg_multiple_stress(int opfd, void *unused) {
     }
     msg.msg_iov = vec;
     msg.msg_iovlen = iov_len;
-
-    // Load up the cmsg data
-    struct cmsghdr *header = nullptr;
-    uint32_t *type = nullptr;
-    /* IV data */
-    struct af_alg_iv *alg_iv = nullptr;
-    int ivsize = 12;
-    uint32_t iv_msg_size = CMSG_SPACE(sizeof(*alg_iv) + ivsize);
-
-    /* AEAD data */
-    uint32_t *assoclen = nullptr;
-    uint32_t assoc_msg_size = CMSG_SPACE(sizeof(*assoclen));
-
-    uint32_t bufferlen = CMSG_SPACE(sizeof(*type)) + /*Encryption/Decryption*/
-    iv_msg_size + /* IV */
-    assoc_msg_size;/* AEAD associated data size */
-
-    char* buffer = (char *) calloc(1, bufferlen);
-    msg.msg_control = buffer;
-    msg.msg_controllen = bufferlen;
 
     EXPECT_EQ(sendmsg(opfd, &msg, 0), total_len)
         << "Incorrect number of bytes sent" ;
