@@ -3,7 +3,13 @@
 #include <thread>
 #include <semaphore.h>
 #include "lib.c"
-#define TESTING
+#include <future>
+
+#define GTEST_TIMEOUT_BEGIN auto asyncFuture = std::async(std::launch::async, [this]()->void {
+#define GTEST_TIMEOUT_END(X) return; }); \
+EXPECT_TRUE(asyncFuture.wait_for(std::chrono::milliseconds(X)) != std::future_status::timeout);
+
+std::vector<std::future<void>> pending_futures;
 pthread_cond_t server_cond;
 pthread_mutex_t server_lock;
 int server_up;
@@ -147,13 +153,13 @@ void test_sendmsg_multiple_scattered(int opfd, void *unused) {
     char const *test_heap = "test_sendmsg_heap";
     char *heap = (char *) malloc(strlen(test_heap) + 1);
     snprintf(heap, strlen(test_heap) + 1, "%s", test_heap);
-    vec[0].iov_base = (void *) test_stack; 
+    vec[0].iov_base = (void *) test_stack;
     vec[0].iov_len = strlen(test_stack) + 1;
     total_len += vec[0].iov_len;
-    vec[1].iov_base = (void *) test_data; 
+    vec[1].iov_base = (void *) test_data;
     vec[1].iov_len = strlen(test_data) + 1;
     total_len += vec[1].iov_len;
-    vec[2].iov_base = (void *) test_heap; 
+    vec[2].iov_base = (void *) test_heap;
     vec[2].iov_len = strlen(test_heap) + 1;
     total_len += vec[2].iov_len;
     msg.msg_iov = vec;
@@ -259,7 +265,7 @@ void test_recvmsg_single(int opfd, void *unused) {
     vec.iov_len = 4096;
     struct msghdr hdr;
     hdr.msg_iovlen = 1;
-    hdr.msg_iov = &vec;  
+    hdr.msg_iov = &vec;
     ASSERT_NE(recvmsg(opfd, &hdr, 0), -1) << "Recv failed";
     ASSERT_STREQ(test_str, buf);
 }
@@ -282,11 +288,13 @@ void test_recvmsg_multiple(int opfd, void *unused) {
     }
     struct msghdr hdr;
     hdr.msg_iovlen = msg_iovlen;
-    hdr.msg_iov = vec;  
+    hdr.msg_iov = vec;
     ASSERT_NE(recvmsg(opfd, &hdr, 0), -1) << "Recv failed";
     unsigned int len_compared = 0;
-    for(int i=0;i<msg_iovlen;i++)
+    for(int i=0;i<msg_iovlen;i++) {
         ASSERT_EQ(memcmp(buf + len_compared, iov_base[i], iov_len), 0);
+        len_compared += iov_len;
+    }
     for(int i=0;i<msg_iovlen;i++)
         free(iov_base[i]);
 }
@@ -297,19 +305,64 @@ void test_recv_partial(int opfd, void *unused) {
     char const *test_str_second = "_partial";
     int send_len = strlen(test_str) + 1;
     char buf[4096];
-    memset(buf, 0, 4096);
+    memset(buf, 0, sizeof(buf));
     ASSERT_EQ(send(opfd, test_str, send_len, 0), send_len)
         << "Incorrect number of bytes sent" ;
-    ASSERT_NE(recv(opfd, buf, strlen(test_str_first), 0), -1) << "1st half of recv failed";
+    ASSERT_NE(recv(opfd, buf, strlen(test_str_first), 0), -1)
+        << "1st half of recv failed";
     ASSERT_STREQ(test_str_first, buf);
-    ASSERT_NE(recv(opfd, buf, strlen(test_str_second), 0), -1) << "2nd half of recv failed";
+    memset(buf, 0, sizeof(buf));
+    ASSERT_NE(recv(opfd, buf, strlen(test_str_second), 0), -1)
+        << "2nd half of recv failed";
     ASSERT_STREQ(test_str_second, buf);
 }
+
+void test_recv_nonblock(int opfd, void *unused) {
+    char buf[4096];
+    ASSERT_EQ(recv(opfd, buf, sizeof(buf), MSG_DONTWAIT), -1);
+    bool err = (errno == EAGAIN || errno == EWOULDBLOCK);
+    ASSERT_EQ(err, true);
+}
+
+void test_recv_peek(int opfd, void *unused) {
+    char const *test_str = "test_read_peek";
+    int send_len = strlen(test_str) + 1;
+    char buf[4096];
+    ASSERT_EQ(send(opfd, test_str, send_len, 0), send_len)
+        << "Incorrect number of bytes sent" ;
+    ASSERT_NE(recv(opfd, buf, send_len, MSG_PEEK), -1) << "Recv failed";
+    ASSERT_STREQ(test_str, buf);
+    memset(buf, 0, sizeof(buf));
+    ASSERT_STREQ("", buf);
+    ASSERT_NE(recv(opfd, buf, send_len, 0), -1) << "Recv failed";
+    ASSERT_STREQ(test_str, buf);
+}
+
+void test_recv_peek_multiple(int opfd, void *unused) {
+    unsigned int num_peeks = 100;
+    char const *test_str = "test_read_peek";
+    int send_len = strlen(test_str) + 1;
+    char buf[4096];
+    ASSERT_EQ(send(opfd, test_str, send_len, 0), send_len)
+        << "Incorrect number of bytes sent" ;
+    for(int i=0;i<num_peeks;i++) {
+        ASSERT_NE(recv(opfd, buf, send_len, MSG_PEEK), -1) << "Recv failed";
+        ASSERT_STREQ(test_str, buf);
+        memset(buf, 0, sizeof(buf));
+        ASSERT_STREQ("", buf);
+    }
+    ASSERT_NE(recv(opfd, buf, send_len, 0), -1) << "Recv failed";
+    ASSERT_STREQ(test_str, buf);
+}
+
 pthread_t server_thread;
 using namespace std;
 class MyTestSuite: public testing::Test {
 protected:
     static void SetUpTestCase() {
+        struct sigaction sa;
+        sa.sa_handler = SIG_IGN;
+        sigaction(SIGPIPE, &sa, NULL);
         SSL_library_init();
         OpenSSL_add_all_algorithms();
         ERR_load_BIO_strings();
@@ -332,11 +385,16 @@ protected:
 
     virtual void TearDown() {
     }
+
 };
 
 TEST_F(MyTestSuite, send_small_encrypt)
 {
+
+    GTEST_TIMEOUT_BEGIN
     main_test_client(test_send_small_encrypt);
+    GTEST_TIMEOUT_END(5000);
+    pending_futures.push_back(std::move(asyncFuture));
 }
 
 TEST_F(MyTestSuite, sendfile_small_encrypt)
@@ -433,6 +491,30 @@ TEST_F(MyTestSuite, DISABLED_setsockopt)
         ;
 }
 
+TEST_F(MyTestSuite, recv_nonblock)
+{
+    GTEST_TIMEOUT_BEGIN
+    main_test_client(test_recv_nonblock);
+    GTEST_TIMEOUT_END(5000);
+    pending_futures.push_back(std::move(asyncFuture));
+}
+
+TEST_F(MyTestSuite, recv_peek)
+{
+    GTEST_TIMEOUT_BEGIN
+    main_test_client(test_recv_peek);
+    GTEST_TIMEOUT_END(5000);
+    pending_futures.push_back(std::move(asyncFuture));
+}
+
+TEST_F(MyTestSuite, recv_peek_multiple)
+{
+    GTEST_TIMEOUT_BEGIN
+    main_test_client(test_recv_peek_multiple);
+    GTEST_TIMEOUT_END(5000);
+    pending_futures.push_back(std::move(asyncFuture));
+}
+
 TEST_F(MyTestSuite, ref)
 {
     ref_test_client(test_send_small_encrypt);
@@ -445,4 +527,7 @@ TEST_F(MyTestSuite, ref)
     ref_test_client(test_recvmsg_single);
     ref_test_client(test_recvmsg_multiple);
     ref_test_client(test_recv_partial);
+    ref_test_client(test_recv_nonblock);
+    ref_test_client(test_recv_peek);
+    ref_test_client(test_recv_peek_multiple);
 }

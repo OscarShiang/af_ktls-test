@@ -221,7 +221,7 @@ void LoadCertificates(SSL_CTX* ctx, char const *CertFile, char const *KeyFile) {
 }
 
 void main_test_client(tls_test test) {
- 
+
     SSL_CTX *ctx;
     SSL *ssl;
     int server = 0;
@@ -349,11 +349,10 @@ void main_server() {
     }
     close(server);/* close server socket */
     SSL_CTX_free(ctx);/* release context */
-
 }
 
 void ref_test_client(tls_test test) {
- 
+
     int client = create_socket(port+1);
     test(client, NULL);
     close(client);
@@ -361,7 +360,7 @@ void ref_test_client(tls_test test) {
 
 void *ref_Servlet(void *args) {
     struct servlet_args *sargs = (struct servlet_args *) args;
-    int client = sargs->client; 
+    int client = sargs->client;
     char buf[4096 * 16];
     int bytes;
 
@@ -371,7 +370,7 @@ void *ref_Servlet(void *args) {
             break;
         send(client, buf, bytes, 0);
     } while (bytes > 0);
-   
+
     free(args);
     close(client);/* close connection */
     return NULL;
@@ -389,6 +388,5 @@ void ref_server() {
                         sizeof(struct servlet_args));
         args->client = client;
         pthread_create(&pthread, NULL, ref_Servlet, args);
-        
     }
 }
