@@ -1,4 +1,6 @@
 #include "lib.h"
+#include <stdio.h>
+#include <stdlib.h>
 
 void gen_random(char *s, const int len) {
     static const char alphanum[] =
