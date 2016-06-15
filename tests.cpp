@@ -2,7 +2,9 @@
 #include <iostream>
 #include <thread>
 #include <future>
+#include <poll.h>
 
+/* Set timeout for tests that can potentially block */
 #define GTEST_TIMEOUT_BEGIN auto asyncFuture = std::async(std::launch::async, [this]()->void {
 #define GTEST_TIMEOUT_END(X) return; }); \
 EXPECT_TRUE(asyncFuture.wait_for(std::chrono::milliseconds(X)) != std::future_status::timeout);
@@ -276,6 +278,23 @@ void test_recv_peek_multiple(int opfd, void *unused) {
     EXPECT_STREQ(test_str, buf);
 }
 
+void test_poll_POLLIN(int opfd, void *unused) {
+    /* Test waiting for some descriptor */
+    char const *test_str = "test_poll";
+    int send_len = strlen(test_str) + 1;
+    char buf[4096];
+    EXPECT_EQ(send(opfd, test_str, send_len, 0), send_len)
+        << "Incorrect number of bytes sent" ;
+    struct pollfd fd;
+    fd.fd = opfd;
+    fd.events = POLLIN;
+    /* Set timeout to 2 secs */
+    EXPECT_EQ(poll(&fd, 1, 2000), 1);
+    EXPECT_EQ(recv(opfd, buf, send_len, 0), send_len);
+    /* Test timing out */
+    EXPECT_EQ(poll(&fd, 1, 2000), 0);
+
+}
 pthread_t server_thread;
 using namespace std;
 class MyTestSuite: public testing::Test {
@@ -363,18 +382,21 @@ TEST_F(MyTestSuite, sendmsg)
     main_test_client(test_sendmsg_single);
 }
 
-TEST_F(MyTestSuite, sendmsg_multiple_iovecs)
+TEST_F(MyTestSuite, DISABLED_sendmsg_multiple_iovecs)
 {
+    /* Worked with iovec patch */
     main_test_client(test_sendmsg_multiple);
 }
 
-TEST_F(MyTestSuite, sendmsg_multiple_iovecs_scattered)
+TEST_F(MyTestSuite, DISABLED_sendmsg_multiple_iovecs_scattered)
 {
+    /* Worked with iovec patch */
     main_test_client(test_sendmsg_multiple_scattered);
 }
 
-TEST_F(MyTestSuite, sendmsg_multiple_iovecs_stress)
+TEST_F(MyTestSuite, DISABLED_sendmsg_multiple_iovecs_stress)
 {
+    /* Worked with iovec patch */
     main_test_client(test_sendmsg_multiple_stress);
 }
 
@@ -412,7 +434,7 @@ TEST_F(MyTestSuite, DISABLED_setsockopt)
         ;
 }
 
-TEST_F(MyTestSuite, recv_nonblock)
+TEST_F(MyTestSuite, DISABLED_recv_nonblock)
 {
     GTEST_TIMEOUT_BEGIN
     main_test_client(test_recv_nonblock);
@@ -420,7 +442,7 @@ TEST_F(MyTestSuite, recv_nonblock)
     pending_futures.push_back(std::move(asyncFuture));
 }
 
-TEST_F(MyTestSuite, recv_peek)
+TEST_F(MyTestSuite, DISABLED_recv_peek)
 {
     GTEST_TIMEOUT_BEGIN
     main_test_client(test_recv_peek);
@@ -428,12 +450,18 @@ TEST_F(MyTestSuite, recv_peek)
     pending_futures.push_back(std::move(asyncFuture));
 }
 
-TEST_F(MyTestSuite, recv_peek_multiple)
+TEST_F(MyTestSuite, DISABLED_recv_peek_multiple)
 {
     GTEST_TIMEOUT_BEGIN
     main_test_client(test_recv_peek_multiple);
     GTEST_TIMEOUT_END(5000);
     pending_futures.push_back(std::move(asyncFuture));
+}
+
+TEST_F(MyTestSuite, DISABLED_poll_POLLIN)
+{
+    /* Worked with tls_poll patch */
+    main_test_client(test_poll_POLLIN);
 }
 
 TEST_F(MyTestSuite, ref)
@@ -451,4 +479,5 @@ TEST_F(MyTestSuite, ref)
     ref_test_client(test_recv_nonblock);
     ref_test_client(test_recv_peek);
     ref_test_client(test_recv_peek_multiple);
+    ref_test_client(test_poll_POLLIN);
 }
