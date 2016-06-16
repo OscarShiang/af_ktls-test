@@ -5,9 +5,11 @@
 #include <poll.h>
 
 /* Set timeout for tests that can potentially block */
-#define GTEST_TIMEOUT_BEGIN auto asyncFuture = std::async(std::launch::async, [this]()->void {
+#define GTEST_TIMEOUT_BEGIN auto asyncFuture = \
+        std::async(std::launch::async, [this]()->void {
 #define GTEST_TIMEOUT_END(X) return; }); \
-EXPECT_TRUE(asyncFuture.wait_for(std::chrono::milliseconds(X)) != std::future_status::timeout);
+EXPECT_TRUE(asyncFuture.wait_for(std::chrono::milliseconds(X)) \
+        != std::future_status::timeout);
 
 std::vector<std::future<void>> pending_futures;
 extern "C" {
@@ -20,18 +22,16 @@ void test_send_small_encrypt(int opfd, void *unused) {
 
     char const*test_str = "test_send";
     int to_send = strlen(test_str) + 1;
-    EXPECT_EQ(send(opfd, test_str, to_send, 0), to_send)
-        << "Incorrect number of bytes sent" ;
+    EXPECT_EQ(send(opfd, test_str, to_send, 0), to_send);
 }
 
 /* Sends a short file using sendfile(), and checks its return */
 void test_sendfile_small_encrypt(int opfd, void *unused) {
     int filefd = open("small.txt", O_RDONLY);
-    EXPECT_NE(filefd, -1) << "Open failed" ;
+    EXPECT_NE(filefd, -1);
     struct stat st;
     fstat(filefd, &st);
-    EXPECT_GE(sendfile(opfd, filefd, 0, st.st_size), 0)
-        << "Sendfile FAILED";
+    EXPECT_GE(sendfile(opfd, filefd, 0, st.st_size), 0);
 }
 
 /* Sends a short message and read the reply, which should echo the send message
@@ -41,9 +41,8 @@ void test_recv_small_decrypt(int opfd, void *unused) {
     char const *test_str = "test_read";
     int send_len = strlen(test_str) + 1;
     char buf[4096];
-    EXPECT_EQ(send(opfd, test_str, send_len, 0), send_len)
-        << "Incorrect number of bytes sent" ;
-    EXPECT_NE(recv(opfd, buf, send_len, 0), -1) << "Recv failed";
+    EXPECT_EQ(send(opfd, test_str, send_len, 0), send_len);
+    EXPECT_NE(recv(opfd, buf, send_len, 0), -1);
     EXPECT_STREQ(test_str, buf);
 }
 
@@ -57,10 +56,9 @@ void test_sendmsg_single(int opfd, void *unused) {
     struct iovec vec = { (void *) test_str, send_len };
     msg.msg_iov = &vec;
     msg.msg_iovlen = 1;
-    EXPECT_EQ(sendmsg(opfd, &msg, 0), send_len)
-        << "Incorrect number of bytes sent";
+    EXPECT_EQ(sendmsg(opfd, &msg, 0), send_len);
     char buf[4096];
-    EXPECT_NE(recv(opfd, buf, send_len, 0), -1) << "Recv failed";
+    EXPECT_NE(recv(opfd, buf, send_len, 0), -1);
     EXPECT_STREQ(test_str, buf);
     free(buffer);
 }
@@ -85,10 +83,9 @@ void test_sendmsg_multiple(int opfd, void *unused) {
     msg.msg_iov = vec;
     msg.msg_iovlen = iov_len;
 
-    EXPECT_EQ(sendmsg(opfd, &msg, 0), total_len)
-        << "Incorrect number of bytes sent" ;
+    EXPECT_EQ(sendmsg(opfd, &msg, 0), total_len);
     char buf[4096];
-    EXPECT_NE(recv(opfd, buf, total_len, 0), -1) << "Recv failed";
+    EXPECT_NE(recv(opfd, buf, total_len, 0), -1);
     int len_cmp = 0;
     for (int i = 0; i < iov_len; i++) {
         EXPECT_STREQ(test_strs[i], buf + len_cmp);
@@ -127,10 +124,9 @@ void test_sendmsg_multiple_scattered(int opfd, void *unused) {
     msg.msg_iov = vec;
     msg.msg_iovlen = iov_len;
 
-    EXPECT_EQ(sendmsg(opfd, &msg, 0), total_len)
-        << "Incorrect number of bytes sent" ;
+    EXPECT_EQ(sendmsg(opfd, &msg, 0), total_len);
     char buf[4096];
-    EXPECT_NE(recv(opfd, buf, total_len, 0), -1) << "Recv failed";
+    EXPECT_NE(recv(opfd, buf, total_len, 0), -1);
     int len_cmp = 0;
     EXPECT_STREQ(test_stack, buf + len_cmp);
     len_cmp += vec[0].iov_len;
@@ -162,10 +158,9 @@ void test_sendmsg_multiple_stress(int opfd, void *unused) {
     msg.msg_iov = vec;
     msg.msg_iovlen = iov_len;
 
-    EXPECT_EQ(sendmsg(opfd, &msg, 0), total_len)
-        << "Incorrect number of bytes sent" ;
+    EXPECT_EQ(sendmsg(opfd, &msg, 0), total_len);
     char buf[1<<14];
-    EXPECT_NE(recv(opfd, buf, total_len, 0), -1) << "Recv failed";
+    EXPECT_NE(recv(opfd, buf, total_len, 0), -1);
     int len_cmp = 0;
     for (int i = 0; i < iov_len; i++) {
         EXPECT_STREQ(test_strs[i], buf + len_cmp);
@@ -179,8 +174,7 @@ void test_sendmsg_multiple_stress(int opfd, void *unused) {
 void test_recvmsg_single(int opfd, void *unused) {
     char const *test_str = "test_recvmsg_single";
     int send_len = strlen(test_str) + 1;
-    EXPECT_EQ(send(opfd, test_str, send_len, 0), send_len)
-        << "Incorrect number of bytes sent" ;
+    EXPECT_EQ(send(opfd, test_str, send_len, 0), send_len);
     char buf[4096];
     struct iovec vec;
     vec.iov_base = (char *)buf;
@@ -188,7 +182,7 @@ void test_recvmsg_single(int opfd, void *unused) {
     struct msghdr hdr;
     hdr.msg_iovlen = 1;
     hdr.msg_iov = &vec;
-    EXPECT_NE(recvmsg(opfd, &hdr, 0), -1) << "Recv failed";
+    EXPECT_NE(recvmsg(opfd, &hdr, 0), -1);
     EXPECT_STREQ(test_str, buf);
 }
 
@@ -196,8 +190,7 @@ void test_recvmsg_multiple(int opfd, void *unused) {
     char buf[1<<14];
     int send_len = 1<<14;
     gen_random(buf, send_len);
-    EXPECT_EQ(send(opfd, buf, send_len, 0), send_len)
-        << "Incorrect number of bytes sent" ;
+    EXPECT_EQ(send(opfd, buf, send_len, 0), send_len);
     unsigned int msg_iovlen = 1024;
     unsigned int iov_len = 16;
     struct iovec vec[msg_iovlen];
@@ -211,7 +204,7 @@ void test_recvmsg_multiple(int opfd, void *unused) {
     struct msghdr hdr;
     hdr.msg_iovlen = msg_iovlen;
     hdr.msg_iov = vec;
-    EXPECT_NE(recvmsg(opfd, &hdr, 0), -1) << "Recv failed";
+    EXPECT_NE(recvmsg(opfd, &hdr, 0), -1);
     unsigned int len_compared = 0;
     for(int i=0;i<msg_iovlen;i++) {
         EXPECT_EQ(memcmp(buf + len_compared, iov_base[i], iov_len), 0);
@@ -229,14 +222,11 @@ void test_recv_partial(int opfd, void *unused) {
     int send_len = strlen(test_str) + 1;
     char buf[4096];
     memset(buf, 0, sizeof(buf));
-    EXPECT_EQ(send(opfd, test_str, send_len, 0), send_len)
-        << "Incorrect number of bytes sent" ;
-    EXPECT_NE(recv(opfd, buf, strlen(test_str_first), 0), -1)
-        << "1st half of recv failed";
+    EXPECT_EQ(send(opfd, test_str, send_len, 0), send_len);
+    EXPECT_NE(recv(opfd, buf, strlen(test_str_first), 0), -1);
     EXPECT_STREQ(test_str_first, buf);
     memset(buf, 0, sizeof(buf));
-    EXPECT_NE(recv(opfd, buf, strlen(test_str_second), 0), -1)
-        << "2nd half of recv failed";
+    EXPECT_NE(recv(opfd, buf, strlen(test_str_second), 0), -1);
     EXPECT_STREQ(test_str_second, buf);
 }
 
@@ -251,13 +241,12 @@ void test_recv_peek(int opfd, void *unused) {
     char const *test_str = "test_read_peek";
     int send_len = strlen(test_str) + 1;
     char buf[4096];
-    EXPECT_EQ(send(opfd, test_str, send_len, 0), send_len)
-        << "Incorrect number of bytes sent" ;
-    EXPECT_NE(recv(opfd, buf, send_len, MSG_PEEK), -1) << "Recv failed";
+    EXPECT_EQ(send(opfd, test_str, send_len, 0), send_len);
+    EXPECT_NE(recv(opfd, buf, send_len, MSG_PEEK), -1);
     EXPECT_STREQ(test_str, buf);
     memset(buf, 0, sizeof(buf));
     EXPECT_STREQ("", buf);
-    EXPECT_NE(recv(opfd, buf, send_len, 0), -1) << "Recv failed";
+    EXPECT_NE(recv(opfd, buf, send_len, 0), -1);
     EXPECT_STREQ(test_str, buf);
 }
 
@@ -266,15 +255,14 @@ void test_recv_peek_multiple(int opfd, void *unused) {
     char const *test_str = "test_read_peek";
     int send_len = strlen(test_str) + 1;
     char buf[4096];
-    EXPECT_EQ(send(opfd, test_str, send_len, 0), send_len)
-        << "Incorrect number of bytes sent" ;
+    EXPECT_EQ(send(opfd, test_str, send_len, 0), send_len);
     for(int i=0;i<num_peeks;i++) {
-        EXPECT_NE(recv(opfd, buf, send_len, MSG_PEEK), -1) << "Recv failed";
+        EXPECT_NE(recv(opfd, buf, send_len, MSG_PEEK), -1);
         EXPECT_STREQ(test_str, buf);
         memset(buf, 0, sizeof(buf));
         EXPECT_STREQ("", buf);
     }
-    EXPECT_NE(recv(opfd, buf, send_len, 0), -1) << "Recv failed";
+    EXPECT_NE(recv(opfd, buf, send_len, 0), -1);
     EXPECT_STREQ(test_str, buf);
 }
 
@@ -283,8 +271,7 @@ void test_poll_POLLIN(int opfd, void *unused) {
     char const *test_str = "test_poll";
     int send_len = strlen(test_str) + 1;
     char buf[4096];
-    EXPECT_EQ(send(opfd, test_str, send_len, 0), send_len)
-        << "Incorrect number of bytes sent" ;
+    EXPECT_EQ(send(opfd, test_str, send_len, 0), send_len);
     struct pollfd fd;
     fd.fd = opfd;
     fd.events = POLLIN;
@@ -302,7 +289,7 @@ protected:
     static void SetUpTestCase() {
         struct sigaction sa;
         sa.sa_handler = SIG_IGN;
-        sigaction(SIGPIPE, &sa, NULL);
+        sigaction(SIGPIPE, &sa, nullptr);
         SSL_library_init();
         OpenSSL_add_all_algorithms();
         ERR_load_BIO_strings();
