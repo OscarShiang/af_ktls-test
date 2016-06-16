@@ -3,6 +3,7 @@
 #include <thread>
 #include <future>
 #include <poll.h>
+#include "cases/tests.hpp"
 
 /* Set timeout for tests that can potentially block */
 #define GTEST_TIMEOUT_BEGIN auto asyncFuture = \
@@ -280,8 +281,8 @@ void test_poll_POLLIN(int opfd, void *unused) {
     EXPECT_EQ(recv(opfd, buf, send_len, 0), send_len);
     /* Test timing out */
     EXPECT_EQ(poll(&fd, 1, 2000), 0);
-
 }
+
 pthread_t server_thread;
 using namespace std;
 class MyTestSuite: public testing::Test {
@@ -409,16 +410,9 @@ TEST_F(MyTestSuite, DISABLED_recv_partial)
     main_test_client(test_recv_partial);
 }
 
-TEST_F(MyTestSuite, DISABLED_getsockopt)
+TEST_F(MyTestSuite, sockopt)
 {
-    EXPECT_EQ(1, 0)
-        ;
-}
-
-TEST_F(MyTestSuite, DISABLED_setsockopt)
-{
-    EXPECT_EQ(1, 0)
-        ;
+    main_test_client(test_sockopt);
 }
 
 TEST_F(MyTestSuite, DISABLED_recv_nonblock)
