@@ -9,7 +9,7 @@
 #define TESTS_HPP_
 
 void test_sockopt(int opfd, void *unused);
-
+void test_unbinded(int opfd, void *unused);
 
 
 #endif /* TESTS_HPP_ */

@@ -9,10 +9,7 @@
 #include "af_ktls.h"
 #include <sys/socket.h>
 #include <errno.h>
-
-#define AES128_GCM_KEY_SIZE          ((size_t)16)
-#define AES128_GCM_IV_SIZE           ((size_t)8)
-#define AES128_GCM_SALT_SIZE         ((size_t)4)
+#include "def.h"
 
 static void do_sockopt(int opfd, size_t optsize,
         int optname_set, int optname_get) {

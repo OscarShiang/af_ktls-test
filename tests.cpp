@@ -4,6 +4,8 @@
 #include <future>
 #include <poll.h>
 #include "cases/tests.hpp"
+#include "def.h"
+#include <errno.h>
 
 /* Set timeout for tests that can potentially block */
 #define GTEST_TIMEOUT_BEGIN auto asyncFuture = \
@@ -47,6 +49,14 @@ void test_recv_small_decrypt(int opfd, void *unused) {
     EXPECT_STREQ(test_str, buf);
 }
 
+void test_send_overflow(int opfd, void *unused) {
+    /* This test does not pass in reference server */
+    unsigned int send_len = TLS_PAYLOAD_MAX_LEN + 1;
+    char buf[send_len];
+    gen_random(buf, send_len);
+    EXPECT_EQ(send(opfd, buf, send_len, 0), -1);
+    EXPECT_EQ(errno, E2BIG);
+}
 void test_sendmsg_single(int opfd, void *unused) {
     struct msghdr msg;
     char *buffer = prepare_msghdr(&msg);
@@ -170,6 +180,32 @@ void test_sendmsg_multiple_stress(int opfd, void *unused) {
     free(buffer);
     for(int i=0;i<iov_len;i++)
         free(test_strs[i]);
+}
+
+void test_splice_from_pipe(int opfd, void *unused) {
+    int p[2];
+    ASSERT_GE(pipe(p), 0);
+    int send_len = TLS_PAYLOAD_MAX_LEN;
+    char mem_send[TLS_PAYLOAD_MAX_LEN];
+    gen_random(mem_send, send_len);
+    EXPECT_GE(write(p[1], mem_send, send_len),0);
+    EXPECT_GE(splice(p[0], nullptr, opfd, nullptr, send_len, 0), 0);
+    char mem_recv[TLS_PAYLOAD_MAX_LEN];
+    EXPECT_GE(recv(opfd, mem_recv, send_len, 0), 0);
+    EXPECT_STREQ(mem_send, mem_recv);
+}
+
+void test_splice_to_pipe(int opfd, void *unused) {
+    int p[2];
+    ASSERT_GE(pipe(p), 0);
+    int send_len = TLS_PAYLOAD_MAX_LEN;
+    char mem_send[TLS_PAYLOAD_MAX_LEN];
+    gen_random(mem_send, send_len);
+    EXPECT_GE(send(opfd, mem_send, send_len, 0),0);
+    EXPECT_GE(splice(opfd, nullptr, p[1], nullptr, send_len, 0), 0);
+    char mem_recv[TLS_PAYLOAD_MAX_LEN];
+    EXPECT_GE(read(p[0], mem_recv, send_len), 0);
+    EXPECT_STREQ(mem_send, mem_recv);
 }
 
 void test_recvmsg_single(int opfd, void *unused) {
@@ -330,6 +366,11 @@ TEST_F(MyTestSuite, sendfile_small_encrypt)
     main_test_client(test_sendfile_small_encrypt);
 }
 
+TEST_F(MyTestSuite, send_overflow)
+{
+    main_test_client(test_send_overflow);
+}
+
 TEST_F(MyTestSuite, read_small_decrypt)
 {
     main_test_client(test_recv_small_decrypt);
@@ -345,6 +386,11 @@ TEST_F(MyTestSuite, DISABLED_bind)
 {
     EXPECT_EQ(1, 0)
         ;
+}
+
+TEST_F(MyTestSuite, unbinded)
+{
+    main_test_client(test_unbinded);
 }
 
 TEST_F(MyTestSuite, DISABLED_getsockname)
@@ -388,6 +434,17 @@ TEST_F(MyTestSuite, DISABLED_sendmsg_multiple_iovecs_stress)
     main_test_client(test_sendmsg_multiple_stress);
 }
 
+TEST_F(MyTestSuite, splice_from_pipe)
+{
+    /* Tests sendpage implementation */
+    main_test_client(test_splice_from_pipe);
+}
+
+TEST_F(MyTestSuite, splice_to_pipe)
+{
+    /* Test splice_read implementation */
+    main_test_client(test_splice_to_pipe);
+}
 
 TEST_F(MyTestSuite, DISABLED_sendmmsg)
 {
@@ -461,4 +518,5 @@ TEST_F(MyTestSuite, ref)
     ref_test_client(test_recv_peek);
     ref_test_client(test_recv_peek_multiple);
     ref_test_client(test_poll_POLLIN);
+    ref_test_client(test_unbinded);
 }

@@ -3,7 +3,7 @@ cmake_minimum_required(VERSION 2.8)
 # Locate GTest
 find_package(GTest REQUIRED)
 add_subdirectory(${CMAKE_SOURCE_DIR}/cases)
-include_directories(${GTEST_INCLUDE_DIRS})
+include_directories(${GTEST_INCLUDE_DIRS} ${CMAKE_SOURCE_DIR}/cases)
 link_directories(${CMAKE_SOURCE_DIR}/cases)
 set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -std=c++11")
 
