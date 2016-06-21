@@ -1,4 +1,5 @@
-#include "lib.h"
+#include "lib.hpp"
+
 #include <stdio.h>
 #include <stdlib.h>
 

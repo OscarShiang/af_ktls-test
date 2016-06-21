@@ -1,11 +1,18 @@
 #include <gtest/gtest.h>
+#include "def.h"
 #include <iostream>
 #include <thread>
 #include <future>
 #include <poll.h>
 #include "cases/tests.hpp"
-#include "def.h"
 #include <errno.h>
+#include "lib.hpp"
+#include "tls.hpp"
+#include "server.hpp"
+
+extern pthread_cond_t server_cond;
+extern pthread_mutex_t server_lock;
+extern int server_up;
 
 /* Set timeout for tests that can potentially block */
 #define GTEST_TIMEOUT_BEGIN auto asyncFuture = \
@@ -15,10 +22,7 @@ EXPECT_TRUE(asyncFuture.wait_for(std::chrono::milliseconds(X)) \
         != std::future_status::timeout);
 
 std::vector<std::future<void>> pending_futures;
-extern "C" {
-    #include "lib.h"
-    #include "tls.h"
-}
+using namespace std;
 
 /* Sends a short message using send(), and checks its return value */
 void test_send_small_encrypt(int opfd, void *unused) {
@@ -37,13 +41,30 @@ void test_sendfile_small_encrypt(int opfd, void *unused) {
     EXPECT_GE(sendfile(opfd, filefd, 0, st.st_size), 0);
 }
 
+void test_send_max(int opfd, void *unused) {
+    unsigned int send_len = TLS_PAYLOAD_MAX_LEN;
+    char buf[send_len];
+    gen_random(buf, send_len);
+    EXPECT_GE(send(opfd, buf, send_len, 0), 0);
+}
+
+void test_recv_max(int opfd, void *unused) {
+    unsigned int send_len = TLS_PAYLOAD_MAX_LEN;
+    char buf[send_len];
+    gen_random(buf, send_len);
+    EXPECT_GE(send(opfd, buf, send_len, 0), 0);
+    char recv_mem[send_len];
+    EXPECT_NE(recv(opfd, recv_mem, send_len, 0), -1);
+    EXPECT_STREQ(recv_mem, buf);
+}
+
 /* Sends a short message and read the reply, which should echo the send message
  * Checks that the message was sent and received correctly
  */
 void test_recv_small_decrypt(int opfd, void *unused) {
     char const *test_str = "test_read";
     int send_len = strlen(test_str) + 1;
-    char buf[4096];
+    char buf[send_len];
     EXPECT_EQ(send(opfd, test_str, send_len, 0), send_len);
     EXPECT_NE(recv(opfd, buf, send_len, 0), -1);
     EXPECT_STREQ(test_str, buf);
@@ -68,7 +89,7 @@ void test_sendmsg_single(int opfd, void *unused) {
     msg.msg_iov = &vec;
     msg.msg_iovlen = 1;
     EXPECT_EQ(sendmsg(opfd, &msg, 0), send_len);
-    char buf[4096];
+    char buf[send_len];
     EXPECT_NE(recv(opfd, buf, send_len, 0), -1);
     EXPECT_STREQ(test_str, buf);
     free(buffer);
@@ -95,7 +116,7 @@ void test_sendmsg_multiple(int opfd, void *unused) {
     msg.msg_iovlen = iov_len;
 
     EXPECT_EQ(sendmsg(opfd, &msg, 0), total_len);
-    char buf[4096];
+    char buf[total_len];
     EXPECT_NE(recv(opfd, buf, total_len, 0), -1);
     int len_cmp = 0;
     for (int i = 0; i < iov_len; i++) {
@@ -136,7 +157,7 @@ void test_sendmsg_multiple_scattered(int opfd, void *unused) {
     msg.msg_iovlen = iov_len;
 
     EXPECT_EQ(sendmsg(opfd, &msg, 0), total_len);
-    char buf[4096];
+    char buf[total_len];
     EXPECT_NE(recv(opfd, buf, total_len, 0), -1);
     int len_cmp = 0;
     EXPECT_STREQ(test_stack, buf + len_cmp);
@@ -212,10 +233,10 @@ void test_recvmsg_single(int opfd, void *unused) {
     char const *test_str = "test_recvmsg_single";
     int send_len = strlen(test_str) + 1;
     EXPECT_EQ(send(opfd, test_str, send_len, 0), send_len);
-    char buf[4096];
+    char buf[send_len];
     struct iovec vec;
     vec.iov_base = (char *)buf;
-    vec.iov_len = 4096;
+    vec.iov_len = send_len;
     struct msghdr hdr;
     hdr.msg_iovlen = 1;
     hdr.msg_iov = &vec;
@@ -223,6 +244,21 @@ void test_recvmsg_single(int opfd, void *unused) {
     EXPECT_STREQ(test_str, buf);
 }
 
+void test_recvmsg_single_max(int opfd, void *unused) {
+    int send_len = TLS_PAYLOAD_MAX_LEN;
+    char send_mem[send_len];
+    gen_random(send_mem, send_len);
+    EXPECT_EQ(send(opfd, send_mem, send_len, 0), send_len);
+    char recv_mem[TLS_PAYLOAD_MAX_LEN];
+    struct iovec vec;
+    vec.iov_base = (char *)recv_mem;
+    vec.iov_len = TLS_PAYLOAD_MAX_LEN;
+    struct msghdr hdr;
+    hdr.msg_iovlen = 1;
+    hdr.msg_iov = &vec;
+    EXPECT_NE(recvmsg(opfd, &hdr, 0), -1);
+    EXPECT_STREQ(send_mem, recv_mem);
+}
 void test_recvmsg_multiple(int opfd, void *unused) {
     char buf[1<<14];
     int send_len = 1<<14;
@@ -252,19 +288,92 @@ void test_recvmsg_multiple(int opfd, void *unused) {
         free(iov_base[i]);
 }
 
+/* Tests recvmsg_multiple under the case that decryption is
+ * guaranteed to be done by the async worker
+ */
+void test_recvmsg_multiple_async(int opfd, void *unused) {
+    char buf[1<<14];
+    int send_len = 1<<14;
+    gen_random(buf, send_len);
+    EXPECT_EQ(send(opfd, buf, send_len, 0), send_len);
+    unsigned int msg_iovlen = 1024;
+    unsigned int iov_len = 16;
+    struct iovec vec[msg_iovlen];
+    char *iov_base[msg_iovlen];
+    for(int i=0;i<msg_iovlen;i++)
+    {
+        iov_base[i] = (char *)malloc(iov_len);
+        vec[i].iov_base = iov_base[i];
+        vec[i].iov_len = iov_len;
+    }
+    struct msghdr hdr;
+    hdr.msg_iovlen = msg_iovlen;
+    hdr.msg_iov = vec;
+    /* Sleep for a while to give async worker a chance to run */
+    sleep(2);
+    EXPECT_NE(recvmsg(opfd, &hdr, 0), -1);
+    unsigned int len_compared = 0;
+    for(int i=0;i<msg_iovlen;i++) {
+        EXPECT_EQ(memcmp(buf + len_compared, iov_base[i], iov_len), 0);
+        len_compared += iov_len;
+    }
+
+    for(int i=0;i<msg_iovlen;i++)
+        free(iov_base[i]);
+}
+
+void test_single_send_multiple_recv(int opfd, void *unused) {
+    unsigned int num_messages = 2;
+    unsigned int send_len = TLS_PAYLOAD_MAX_LEN;
+#define total_len send_len * num_messages
+    char send_mem[total_len];
+    gen_random(send_mem, send_len);
+    EXPECT_GE(send(opfd, send_mem, send_len, 0), 0);
+    char recv_mem[send_len];
+    memset(recv_mem, 0, send_len);
+    /* Give async worker time to run */
+    sleep(2);
+    EXPECT_NE(recv(opfd, recv_mem, send_len, 0), -1);
+    EXPECT_STREQ(recv_mem, send_mem);
+    EXPECT_NE(recv(opfd, recv_mem, send_len, 0), -1);
+    EXPECT_STREQ(recv_mem, send_mem);
+
+}
+
+/* Sends n messages of size TLS_PAYLOAD_MAX_LEN and checks that
+ * a single recv can receive them all.
+ * This test forces decryption to happen in both the cache and outside
+ */
+void test_multiple_send_single_recv(int opfd, void *unused) {
+    /* Client must be called with type == serve_send_twice */
+    unsigned int num_messages = 2;
+    unsigned int send_len = 10;
+#define total_len send_len * num_messages
+    char send_mem[send_len];
+    gen_random(send_mem, send_len);
+    EXPECT_GE(send(opfd, send_mem, send_len, 0), 0);
+    char recv_mem[total_len];
+    memset(recv_mem, 0, total_len);
+    sleep(4);
+    EXPECT_EQ(recv(opfd, recv_mem, total_len, 0), total_len);
+    /* Must use memcmp since all recv are placed in single buffer */
+    EXPECT_STREQ(recv_mem, send_mem);
+    EXPECT_STREQ(recv_mem+send_len, send_mem);
+}
+
 void test_recv_partial(int opfd, void *unused) {
     char const *test_str = "test_read_partial";
     char const *test_str_first = "test_read";
     char const *test_str_second = "_partial";
     int send_len = strlen(test_str) + 1;
-    char buf[4096];
-    memset(buf, 0, sizeof(buf));
+    char recv_mem[send_len];
+    memset(recv_mem, 0, sizeof(recv_mem));
     EXPECT_EQ(send(opfd, test_str, send_len, 0), send_len);
-    EXPECT_NE(recv(opfd, buf, strlen(test_str_first), 0), -1);
-    EXPECT_STREQ(test_str_first, buf);
-    memset(buf, 0, sizeof(buf));
-    EXPECT_NE(recv(opfd, buf, strlen(test_str_second), 0), -1);
-    EXPECT_STREQ(test_str_second, buf);
+    EXPECT_NE(recv(opfd, recv_mem, strlen(test_str_first), 0), -1);
+    EXPECT_STREQ(test_str_first, recv_mem);
+    memset(recv_mem, 0, sizeof(recv_mem));
+    EXPECT_NE(recv(opfd, recv_mem, strlen(test_str_second), 0), -1);
+    EXPECT_STREQ(test_str_second, recv_mem);
 }
 
 void test_recv_nonblock(int opfd, void *unused) {
@@ -277,7 +386,7 @@ void test_recv_nonblock(int opfd, void *unused) {
 void test_recv_peek(int opfd, void *unused) {
     char const *test_str = "test_read_peek";
     int send_len = strlen(test_str) + 1;
-    char buf[4096];
+    char buf[send_len];
     EXPECT_EQ(send(opfd, test_str, send_len, 0), send_len);
     EXPECT_NE(recv(opfd, buf, send_len, MSG_PEEK), -1);
     EXPECT_STREQ(test_str, buf);
@@ -291,7 +400,7 @@ void test_recv_peek_multiple(int opfd, void *unused) {
     unsigned int num_peeks = 100;
     char const *test_str = "test_read_peek";
     int send_len = strlen(test_str) + 1;
-    char buf[4096];
+    char buf[send_len];
     EXPECT_EQ(send(opfd, test_str, send_len, 0), send_len);
     for(int i=0;i<num_peeks;i++) {
         EXPECT_NE(recv(opfd, buf, send_len, MSG_PEEK), -1);
@@ -307,20 +416,47 @@ void test_poll_POLLIN(int opfd, void *unused) {
     /* Test waiting for some descriptor */
     char const *test_str = "test_poll";
     int send_len = strlen(test_str) + 1;
-    char buf[4096];
+    char buf[send_len];
     EXPECT_EQ(send(opfd, test_str, send_len, 0), send_len);
-    struct pollfd fd;
+    struct pollfd fd = {0,0,0};
     fd.fd = opfd;
     fd.events = POLLIN;
     /* Set timeout to 2 secs */
     EXPECT_EQ(poll(&fd, 1, 2000), 1);
+    EXPECT_EQ(fd.revents & POLLIN, 1);
     EXPECT_EQ(recv(opfd, buf, send_len, 0), send_len);
     /* Test timing out */
     EXPECT_EQ(poll(&fd, 1, 2000), 0);
 }
 
+void poll_wait_helper(int opfd) {
+    sleep(2);
+    char const *test_str = "test_poll_wait";
+    int send_len = strlen(test_str) + 1;
+    EXPECT_EQ(send(opfd, test_str, send_len, 0), send_len);
+}
+/* Test waiting for some desscriptor, where
+ * the thread calling poll is guaranteed
+ * to need to be awoken, rather than returning
+ * instantly
+ */
+void test_poll_POLLIN_wait(int opfd, void *unused) {
+
+    char const *test_str = "test_poll_wait";
+    int send_len = strlen(test_str) + 1;
+    struct pollfd fd = {0,0,0};
+    fd.fd = opfd;
+    fd.events = POLLIN;
+    thread t1(poll_wait_helper, opfd);
+    t1.detach();
+    /* Set timeout to inf. secs */
+    EXPECT_EQ(poll(&fd, 1, -1), 1);
+    EXPECT_EQ(fd.revents & POLLIN, 1);
+    char recv_mem[send_len];
+    EXPECT_EQ(recv(opfd, recv_mem, send_len, 0), send_len);
+}
+
 pthread_t server_thread;
-using namespace std;
 class MyTestSuite: public testing::Test {
 protected:
     static void SetUpTestCase() {
@@ -332,13 +468,15 @@ protected:
         ERR_load_BIO_strings();
         ERR_load_crypto_strings();
         SSL_load_error_strings();/* load all error messages */
-        server_up = -2;
+        server_up = -2 * (server_max - server_min + 1);
         pthread_cond_init(&server_cond, nullptr);
         pthread_mutex_init(&server_lock, nullptr);
-        thread t1(main_server);
-        t1.detach();
-        thread t2(ref_server);
-        t2.detach();
+        for(int i=(int)server_min; i<= (int)server_max;i++) {
+            thread t1(main_server, i);
+            t1.detach();
+            thread t2(ref_server, i);
+            t2.detach();
+        }
         pthread_mutex_lock(&server_lock);
         while (server_up < 0)
             pthread_cond_wait(&server_cond, &server_lock);
@@ -354,11 +492,7 @@ protected:
 
 TEST_F(MyTestSuite, send_small_encrypt)
 {
-
-    GTEST_TIMEOUT_BEGIN
     main_test_client(test_send_small_encrypt);
-    GTEST_TIMEOUT_END(5000);
-    pending_futures.push_back(std::move(asyncFuture));
 }
 
 TEST_F(MyTestSuite, sendfile_small_encrypt)
@@ -382,21 +516,9 @@ TEST_F(MyTestSuite, DISABLED_socketpair)
         ;
 }
 
-TEST_F(MyTestSuite, DISABLED_bind)
-{
-    EXPECT_EQ(1, 0)
-        ;
-}
-
 TEST_F(MyTestSuite, unbinded)
 {
     main_test_client(test_unbinded);
-}
-
-TEST_F(MyTestSuite, DISABLED_getsockname)
-{
-    EXPECT_EQ(1, 0)
-        ;
 }
 
 TEST_F(MyTestSuite, DISABLED_sendto)
@@ -428,7 +550,7 @@ TEST_F(MyTestSuite, DISABLED_sendmsg_multiple_iovecs_scattered)
     main_test_client(test_sendmsg_multiple_scattered);
 }
 
-TEST_F(MyTestSuite, DISABLED_sendmsg_multiple_iovecs_stress)
+TEST_F(MyTestSuite, sendmsg_multiple_iovecs_stress)
 {
     /* Worked with iovec patch */
     main_test_client(test_sendmsg_multiple_stress);
@@ -457,10 +579,30 @@ TEST_F(MyTestSuite, recvmsg)
     main_test_client(test_recvmsg_single);
 }
 
-TEST_F(MyTestSuite, DISABLED_recvmsg_multiple)
+TEST_F(MyTestSuite, recvmsg_multiple)
 {
+    /* Works with iovec patch */
     main_test_client(test_recvmsg_multiple);
 }
+
+TEST_F(MyTestSuite, recvmsg_multiple_async)
+{
+    /* Works with iovec patch */
+    main_test_client(test_recvmsg_multiple_async);
+}
+
+TEST_F(MyTestSuite, single_send_multiple_recv)
+{
+    /* Works with iovec patch */
+    main_test_client(test_single_send_multiple_recv, server_send_twice);
+}
+
+TEST_F(MyTestSuite, multiple_send_single_recv)
+{
+    /* Works with iovec patch */
+    main_test_client(test_multiple_send_single_recv, server_send_twice);
+}
+
 
 TEST_F(MyTestSuite, DISABLED_recv_partial)
 {
@@ -502,6 +644,26 @@ TEST_F(MyTestSuite, DISABLED_poll_POLLIN)
     main_test_client(test_poll_POLLIN);
 }
 
+TEST_F(MyTestSuite, DISABLED_poll_POLLIN_wait)
+{
+    main_test_client(test_poll_POLLIN_wait);
+}
+
+TEST_F(MyTestSuite, send_max)
+{
+    main_test_client(test_send_max);
+}
+
+TEST_F(MyTestSuite, recv_max)
+{
+    main_test_client(test_recv_max);
+}
+
+TEST_F(MyTestSuite, recvmsg_single_max)
+{
+    main_test_client(test_recvmsg_single_max);
+}
+
 TEST_F(MyTestSuite, ref)
 {
     ref_test_client(test_send_small_encrypt);
@@ -519,4 +681,11 @@ TEST_F(MyTestSuite, ref)
     ref_test_client(test_recv_peek_multiple);
     ref_test_client(test_poll_POLLIN);
     ref_test_client(test_unbinded);
+    ref_test_client(test_send_max);
+    ref_test_client(test_recv_max);
+    ref_test_client(test_recvmsg_single_max);
+    ref_test_client(test_poll_POLLIN_wait);
+    ref_test_client(test_recvmsg_multiple_async);
+    ref_test_client(test_multiple_send_single_recv, server_send_twice);
+    ref_test_client(test_single_send_multiple_recv, server_send_twice);
 }

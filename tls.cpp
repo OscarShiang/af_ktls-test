@@ -1,11 +1,15 @@
-#include "tls.h"
+#include "tls.hpp"
+
+#include "def.h"
 
 int bytes_recv;
 int port = 8000;
 char* test_data;
 int test_type;
 unsigned int buf_size;
-
+pthread_cond_t server_cond;
+pthread_mutex_t server_lock;
+int server_up;
 /* Opaque OpenSSL structures to fetch keys */
 #define u64 uint64_t
 #define u32 uint32_t
@@ -109,6 +113,7 @@ struct sockaddr_ktls {
 struct servlet_args {
     int client;
     SSL *ssl;
+    enum serve_action type;
 };
 
 
@@ -163,7 +168,7 @@ SSL_CTX* InitServerCTX(void) {
     /* create new context from method */
     ctx = SSL_CTX_new(SSLv23_server_method());
 
-    if (ctx == NULL) {
+    if (ctx == nullptr) {
         ERR_print_errors_fp(stderr);
         abort();
     }
@@ -188,17 +193,17 @@ void LoadCertificates(SSL_CTX* ctx, char const *CertFile, char const *KeyFile) {
     }
 }
 
-void main_test_client(tls_test test) {
+void main_test_client(tls_test test, int type) {
 
     SSL_CTX *ctx;
     SSL *ssl;
     int server = 0;
-    if ((ctx = SSL_CTX_new(SSLv23_client_method())) == NULL)
+    if ((ctx = SSL_CTX_new(SSLv23_client_method())) == nullptr)
         printf("Unable to create a new SSL context structure.\n");
     SSL_CTX_set_options(ctx, SSL_OP_NO_SSLv2);
     SSL_CTX_set_cipher_list(ctx, "ECDH-ECDSA-AES128-GCM-SHA256");
     ssl = SSL_new(ctx);
-    server = create_socket(port);
+    server = create_socket(port+2*type);
     SSL_set_fd(ssl, server);
     SSL_connect(ssl);
     int opfd = socket(AF_KTLS, SOCK_STREAM, 0);
@@ -250,7 +255,7 @@ void main_test_client(tls_test test) {
         perror("AF_ALG: set read key failed\n");
         exit(EXIT_FAILURE);
     }
-    test(opfd, NULL);
+    test(opfd, nullptr);
 
     SSL_free(ssl);
     close(server);
@@ -259,43 +264,29 @@ void main_test_client(tls_test test) {
 void *Servlet(void *args)/* Serve the connection -- threadable */
 {
     struct servlet_args *sargs = (struct servlet_args *) args;
-    int client = sargs->client;
+    enum serve_action type = sargs->type;
     SSL *ssl = sargs->ssl;
-    char buf[4096 * 16];
-    int sd, bytes;
-
-    if (SSL_accept(ssl) == -1) {
-        ERR_print_errors_fp(stderr);
-    } else {
-        do {
-
-            bytes = SSL_read(ssl, buf, sizeof(buf));/* get request */
-            if (bytes >= 0) {
-                printf("Bytes recv: %i\n", bytes);
-            } else {
-                printf("ERROR\n");
-                ERR_print_errors_fp(stderr);
-                break;
-            }
-            SSL_write(ssl, buf, bytes);
-            bytes_recv += bytes;
-        } while (bytes > 0);
-    }
+    int sd;
+    struct server_args serv_args;
+    serv_args.ssl = ssl;
+    serv_args.type = tls_server;
+    SSL_accept(ssl);
+    tls_server_funcs[type] (&serv_args);
     free(args);
     sd = SSL_get_fd(ssl);/* get socket connection */
     SSL_free(ssl);/* release SSL state */
     close(sd);/* close connection */
-    return NULL;
+    return nullptr;
 }
 
-void main_server() {
+void main_server(int type) {
 
     SSL_CTX *ctx;
 
     ctx = InitServerCTX();/* initialize SSL */
     LoadCertificates(ctx, "ca.crt", "ca.pem");/* load certs */
     SSL_CTX_set_cipher_list(ctx, "ECDH-ECDSA-AES128-GCM-SHA256");
-    int server = OpenListener(port);/* create server socket */
+    int server = OpenListener(port+(2*type));/* create server socket */
     pthread_mutex_lock(&server_lock);
     server_up++;
     pthread_cond_signal(&server_cond);
@@ -311,64 +302,61 @@ void main_server() {
                 sizeof(struct servlet_args));
         args->client = client;
         args->ssl = ssl;
-        pthread_create(&pthread, NULL, Servlet, args);
+        args->type = (enum serve_action) type;
+        pthread_create(&pthread, nullptr, Servlet, args);
     }
     close(server);/* close server socket */
     SSL_CTX_free(ctx);/* release context */
 }
 
-void ref_test_client(tls_test test) {
+void ref_test_client(tls_test test, int type) {
 
-    int client = create_socket(port+1);
-    test(client, NULL);
+    int client = create_socket(port+(type * 2 + 1));
+    test(client, nullptr);
     close(client);
 }
 
 void *ref_Servlet(void *args) {
     struct servlet_args *sargs = (struct servlet_args *) args;
+    enum serve_action type = (enum serve_action) sargs->type;
+    struct server_args serv_args;
     int client = sargs->client;
-    char buf[4096 * 16];
-    int bytes;
-
-    do {
-        bytes = recv(client, buf, sizeof(buf), 0);
-        if (bytes < 0)
-            break;
-        send(client, buf, bytes, 0);
-    } while (bytes > 0);
-
+    serv_args.client = client;
+    serv_args.type = plain_server;
+    tls_server_funcs[type] (&serv_args);
     free(args);
     close(client);/* close connection */
-    return NULL;
+    return nullptr;
 }
-void ref_server() {
-    int server = OpenListener(port+1);
+void ref_server(int type) {
+    int server = OpenListener(port+(2*type+1));
     pthread_mutex_lock(&server_lock);
     server_up++;
     pthread_cond_signal(&server_cond);
     pthread_mutex_unlock(&server_lock);
     while (1) {
-        int client = accept(server, NULL, NULL);
+        int client = accept(server, nullptr, nullptr);
         pthread_t pthread;
         struct servlet_args *args = (struct servlet_args *) malloc(
                         sizeof(struct servlet_args));
         args->client = client;
-        pthread_create(&pthread, NULL, ref_Servlet, args);
+        args->type = (enum serve_action) type;
+        pthread_create(&pthread, nullptr, ref_Servlet, args);
     }
 }
 
 char *prepare_msghdr(struct msghdr *msg) {
     memset(msg, 0, sizeof(*msg));
     // Load up the cmsg data
-    struct cmsghdr *header = NULL;
-    uint32_t *type = NULL;
+    struct cmsghdr *header = nullptr;
+    uint32_t *type = nullptr;
     /* IV data */
-    struct af_alg_iv *alg_iv = NULL;
+    struct af_alg_iv *alg_iv = nullptr;
     int ivsize = 12;
     uint32_t iv_msg_size = CMSG_SPACE(sizeof(*alg_iv) + ivsize);
 
     /* AEAD data */
-    uint32_t *assoclen = NULL;
+    uint32_t *assoclen = nullptr;
     uint32_t assoc_msg_size = CMSG_SPACE(sizeof(*assoclen));
 
     uint32_t bufferlen = CMSG_SPACE(sizeof(*type)) + /*Encryption/Decryption*/

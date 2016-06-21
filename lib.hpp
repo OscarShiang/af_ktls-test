@@ -5,9 +5,9 @@
  *      Author: lancerchao
  */
 
-#ifndef LIB_H_
+#ifndef LIB_HPP_
 #define LIB_H_
 
 void gen_random(char *, const int);
 
-#endif /* LIB_H_ */
+#endif /* LIB_HPP_ */

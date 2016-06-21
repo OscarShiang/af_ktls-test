@@ -6,7 +6,7 @@
  *      Author: lancerchao
  */
 
-#ifndef TLS_H_
+#ifndef TLS_HPP_
 #define TLS_H_
 
 #include <semaphore.h>
@@ -31,8 +31,8 @@
 #include <netdb.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
-#include <string.h>
 #include <openssl/bio.h>
+#include <string.h>
 #include <openssl/ssl.h>
 #include <openssl/err.h>
 #include <openssl/pem.h>
@@ -40,17 +40,13 @@
 #include <openssl/x509_vfy.h>
 #include <openssl/modes.h>
 #include <openssl/aes.h>
-
+#include "server.hpp"
 typedef void (* tls_test)(int opfd, void *data);
 
-pthread_cond_t server_cond;
-pthread_mutex_t server_lock;
-int server_up;
-
-void main_test_client(tls_test);
-void ref_test_client(tls_test);
-void main_server(void);
-void ref_server(void);
+void main_test_client(tls_test, int type = 0);
+void ref_test_client(tls_test, int type = 0);
+void main_server(int);
+void ref_server(int);
 char * prepare_msghdr(struct msghdr *);
 
-#endif /* TLS_H_ */
+#endif /* TLS_HPP_ */
