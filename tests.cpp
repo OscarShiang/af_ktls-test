@@ -429,12 +429,6 @@ void test_poll_POLLIN(int opfd, void *unused) {
     EXPECT_EQ(poll(&fd, 1, 2000), 0);
 }
 
-void poll_wait_helper(int opfd) {
-    sleep(2);
-    char const *test_str = "test_poll_wait";
-    int send_len = strlen(test_str) + 1;
-    EXPECT_EQ(send(opfd, test_str, send_len, 0), send_len);
-}
 /* Test waiting for some desscriptor, where
  * the thread calling poll is guaranteed
  * to need to be awoken, rather than returning
@@ -447,8 +441,7 @@ void test_poll_POLLIN_wait(int opfd, void *unused) {
     struct pollfd fd = {0,0,0};
     fd.fd = opfd;
     fd.events = POLLIN;
-    thread t1(poll_wait_helper, opfd);
-    t1.detach();
+    EXPECT_EQ(send(opfd, test_str, send_len, 0), send_len);
     /* Set timeout to inf. secs */
     EXPECT_EQ(poll(&fd, 1, -1), 1);
     EXPECT_EQ(fd.revents & POLLIN, 1);
@@ -646,7 +639,7 @@ TEST_F(MyTestSuite, DISABLED_poll_POLLIN)
 
 TEST_F(MyTestSuite, DISABLED_poll_POLLIN_wait)
 {
-    main_test_client(test_poll_POLLIN_wait);
+    main_test_client(test_poll_POLLIN_wait, server_delay);
 }
 
 TEST_F(MyTestSuite, send_max)
@@ -684,7 +677,7 @@ TEST_F(MyTestSuite, ref)
     ref_test_client(test_send_max);
     ref_test_client(test_recv_max);
     ref_test_client(test_recvmsg_single_max);
-    ref_test_client(test_poll_POLLIN_wait);
+    ref_test_client(test_poll_POLLIN_wait, server_delay);
     ref_test_client(test_recvmsg_multiple_async);
     ref_test_client(test_multiple_send_single_recv, server_send_twice);
     ref_test_client(test_single_send_multiple_recv, server_send_twice);
