@@ -379,8 +379,7 @@ void test_recv_partial(int opfd, void *unused) {
 void test_recv_nonblock(int opfd, void *unused) {
     char buf[4096];
     EXPECT_EQ(recv(opfd, buf, sizeof(buf), MSG_DONTWAIT), -1);
-    bool err = (errno == EAGAIN || errno == EWOULDBLOCK);
-    EXPECT_EQ(err, true);
+    EXPECT_TRUE(errno == EAGAIN || errno == EWOULDBLOCK);
 }
 
 void test_recv_peek(int opfd, void *unused) {
@@ -423,7 +422,7 @@ void test_poll_POLLIN(int opfd, void *unused) {
     fd.events = POLLIN;
     /* Set timeout to 2 secs */
     EXPECT_EQ(poll(&fd, 1, 2000), 1);
-    EXPECT_EQ(fd.revents & POLLIN, 1);
+    EXPECT_NE(fd.revents & POLLIN, 0);
     EXPECT_EQ(recv(opfd, buf, send_len, 0), send_len);
     /* Test timing out */
     EXPECT_EQ(poll(&fd, 1, 2000), 0);
@@ -444,11 +443,122 @@ void test_poll_POLLIN_wait(int opfd, void *unused) {
     EXPECT_EQ(send(opfd, test_str, send_len, 0), send_len);
     /* Set timeout to inf. secs */
     EXPECT_EQ(poll(&fd, 1, -1), 1);
-    EXPECT_EQ(fd.revents & POLLIN, 1);
+    EXPECT_NE(fd.revents & POLLIN, 0);
     char recv_mem[send_len];
     EXPECT_EQ(recv(opfd, recv_mem, send_len, 0), send_len);
 }
 
+void test_poll_POLLOUT(int opfd, void *unused) {
+    struct pollfd fd = {0,0,0};
+    fd.fd = opfd;
+    fd.events = POLLOUT;
+    /* Set timeout to 2 secs */
+    EXPECT_EQ(poll(&fd, 1, 2000), 1);
+    EXPECT_NE(fd.revents & POLLOUT, 0);
+}
+
+void test_recv_wait(int opfd, void *unused) {
+    //Run with server_delay.
+    unsigned int send_len = TLS_PAYLOAD_MAX_LEN;
+    char buf[send_len];
+    gen_random(buf, send_len);
+    EXPECT_GE(send(opfd, buf, send_len, 0), 0);
+    char recv_mem[send_len];
+    EXPECT_NE(recv(opfd, recv_mem, send_len, 0), -1);
+    EXPECT_STREQ(recv_mem, buf);
+}
+
+void test_recv_async(int opfd, void *unused) {
+    //Run with server_delay.
+    unsigned int send_len = TLS_PAYLOAD_MAX_LEN;
+    char buf[send_len];
+    gen_random(buf, send_len);
+    EXPECT_GE(send(opfd, buf, send_len, 0), 0);
+    sleep(2);
+    char recv_mem[send_len];
+    EXPECT_NE(recv(opfd, recv_mem, send_len, 0), -1);
+    EXPECT_STREQ(recv_mem, buf);
+}
+
+//These doom tests will raise a SIGSEGV which will kill the
+//program. Future work can include somehow catching and
+//verifying that the signal was received, but for now its
+//done manually
+void test_recv_doom_noasync(int opfd, void *unused) {
+    //Run with server delay
+    unsigned int send_len = TLS_PAYLOAD_MAX_LEN;
+    char send_mem[send_len];
+    gen_random(send_mem, send_len);
+    EXPECT_GE(send(opfd, send_mem, send_len, 0), 0);
+    char recv_mem[10];
+    EXPECT_EQ(recv(opfd, recv_mem, send_len, 0), -1);
+}
+
+void test_recv_doom_async(int opfd, void *unused) {
+    unsigned int send_len = TLS_PAYLOAD_MAX_LEN;
+    char send_mem[send_len];
+    gen_random(send_mem, send_len);
+    EXPECT_GE(send(opfd, send_mem, send_len, 0), 0);
+    sleep(2);
+    char recv_mem[10];
+    EXPECT_EQ(recv(opfd, recv_mem, send_len, 0), -1);
+}
+
+void test_recvmsg_doom_noasync(int opfd, void *unused) {
+    char buf[1<<14];
+    int send_len = 1<<14;
+    gen_random(buf, send_len);
+    EXPECT_EQ(send(opfd, buf, send_len, 0), send_len);
+    unsigned int msg_iovlen = 1024;
+    unsigned int iov_len = 16;
+    struct iovec vec[msg_iovlen];
+    char *iov_base[msg_iovlen];
+    for(int i=0;i<msg_iovlen-1;i++)
+    {
+        iov_base[i] = (char *)malloc(iov_len);
+        vec[i].iov_base = iov_base[i];
+        vec[i].iov_len = iov_len;
+    }
+    //Set one of the iovecs to read-only data
+    iov_base[msg_iovlen-1] = (char *)test_recvmsg_doom_noasync;
+    vec[msg_iovlen-1].iov_base = iov_base[msg_iovlen-1];
+    vec[msg_iovlen-1].iov_len = iov_len;
+    struct msghdr hdr;
+    hdr.msg_iovlen = msg_iovlen;
+    hdr.msg_iov = vec;
+    EXPECT_EQ(recvmsg(opfd, &hdr, 0), -1);
+    for(int i=0;i<msg_iovlen-1;i++)
+        free(iov_base[i]);
+}
+
+
+void test_recvmsg_doom_async(int opfd, void *unused) {
+    char buf[1<<14];
+    int send_len = 1<<14;
+    gen_random(buf, send_len);
+    EXPECT_EQ(send(opfd, buf, send_len, 0), send_len);
+    unsigned int msg_iovlen = 1024;
+    unsigned int iov_len = 16;
+    struct iovec vec[msg_iovlen];
+    char *iov_base[msg_iovlen];
+    for(int i=0;i<msg_iovlen-1;i++)
+    {
+        iov_base[i] = (char *)malloc(iov_len);
+        vec[i].iov_base = iov_base[i];
+        vec[i].iov_len = iov_len;
+    }
+    //Set one of the iovecs to read-only data
+    iov_base[msg_iovlen-1] = (char *)test_recvmsg_doom_noasync;
+    vec[msg_iovlen-1].iov_base = iov_base[msg_iovlen-1];
+    vec[msg_iovlen-1].iov_len = iov_len;
+    struct msghdr hdr;
+    hdr.msg_iovlen = msg_iovlen;
+    hdr.msg_iov = vec;
+    sleep(2);
+    EXPECT_EQ(recvmsg(opfd, &hdr, 0), -1);
+    for(int i=0;i<msg_iovlen-1;i++)
+        free(iov_base[i]);
+}
 pthread_t server_thread;
 class MyTestSuite: public testing::Test {
 protected:
@@ -567,18 +677,18 @@ TEST_F(MyTestSuite, DISABLED_sendmmsg)
         ;
 }
 
-TEST_F(MyTestSuite, recvmsg)
+TEST_F(MyTestSuite, recvmsg_single)
 {
     main_test_client(test_recvmsg_single);
 }
 
-TEST_F(MyTestSuite, recvmsg_multiple)
+TEST_F(MyTestSuite, DISABLED_recvmsg_multiple)
 {
     /* Works with iovec patch */
     main_test_client(test_recvmsg_multiple);
 }
 
-TEST_F(MyTestSuite, recvmsg_multiple_async)
+TEST_F(MyTestSuite, DISABLED_recvmsg_multiple_async)
 {
     /* Works with iovec patch */
     main_test_client(test_recvmsg_multiple_async);
@@ -631,15 +741,25 @@ TEST_F(MyTestSuite, DISABLED_recv_peek_multiple)
     pending_futures.push_back(std::move(asyncFuture));
 }
 
-TEST_F(MyTestSuite, DISABLED_poll_POLLIN)
+TEST_F(MyTestSuite, poll_POLLIN)
 {
     /* Worked with tls_poll patch */
     main_test_client(test_poll_POLLIN);
 }
 
-TEST_F(MyTestSuite, DISABLED_poll_POLLIN_wait)
+TEST_F(MyTestSuite, poll_POLLIN_wait)
 {
     main_test_client(test_poll_POLLIN_wait, server_delay);
+}
+
+TEST_F(MyTestSuite, poll_POLLOUT)
+{
+    main_test_client(test_poll_POLLOUT);
+}
+
+TEST_F(MyTestSuite, DISABLED_poll_POLLOUT_fail)
+{
+    EXPECT_EQ(1, 0);
 }
 
 TEST_F(MyTestSuite, send_max)
@@ -657,6 +777,37 @@ TEST_F(MyTestSuite, recvmsg_single_max)
     main_test_client(test_recvmsg_single_max);
 }
 
+TEST_F(MyTestSuite, recv_wait)
+{
+    main_test_client(test_recv_wait, server_delay);
+}
+
+TEST_F(MyTestSuite, recv_async)
+{
+    main_test_client(test_recv_async);
+}
+
+TEST_F(MyTestSuite, recv_doom_noasync)
+{
+    main_test_client(test_recv_doom_noasync, server_delay);
+}
+
+TEST_F(MyTestSuite, recv_doom_async)
+{
+    main_test_client(test_recv_doom_async);
+}
+
+TEST_F(MyTestSuite, recvmsg_doom_noasync)
+{
+    main_test_client(test_recvmsg_doom_noasync, server_delay);
+}
+
+TEST_F(MyTestSuite, recvmsg_doom_async)
+{
+    main_test_client(test_recvmsg_doom_async);
+}
+
+/* These tests run on a plaintext server */
 TEST_F(MyTestSuite, ref)
 {
     ref_test_client(test_send_small_encrypt);
@@ -681,4 +832,6 @@ TEST_F(MyTestSuite, ref)
     ref_test_client(test_recvmsg_multiple_async);
     ref_test_client(test_multiple_send_single_recv, server_send_twice);
     ref_test_client(test_single_send_multiple_recv, server_send_twice);
+    ref_test_client(test_poll_POLLOUT);
+    ref_test_client(test_recv_wait, server_delay);
 }
