@@ -58,16 +58,21 @@ void test_recv_max(int opfd, void *unused) {
     EXPECT_STREQ(recv_mem, buf);
 }
 
-/* Sends a short message and read the reply, which should echo the send message
+/* Sends a series of short messages and read the reply,
+ * which should echo the send message
  * Checks that the message was sent and received correctly
  */
 void test_recv_small_decrypt(int opfd, void *unused) {
     char const *test_str = "test_read";
     int send_len = strlen(test_str) + 1;
     char buf[send_len];
-    EXPECT_EQ(send(opfd, test_str, send_len, 0), send_len);
-    EXPECT_NE(recv(opfd, buf, send_len, 0), -1);
-    EXPECT_STREQ(test_str, buf);
+    for(int i=0;i<10;i++) {
+        EXPECT_EQ(send(opfd, test_str, send_len, 0), send_len);
+        EXPECT_NE(recv(opfd, buf, send_len, 0), -1);
+        EXPECT_STREQ(test_str, buf);
+        memset(buf, 0, sizeof(buf));
+    }
+
 }
 
 void test_send_overflow(int opfd, void *unused) {
@@ -342,7 +347,6 @@ void test_single_send_multiple_recv(int opfd, void *unused) {
 
 /* Sends n messages of size TLS_PAYLOAD_MAX_LEN and checks that
  * a single recv can receive them all.
- * This test forces decryption to happen in both the cache and outside
  */
 void test_multiple_send_single_recv(int opfd, void *unused) {
     /* Client must be called with type == serve_send_twice */
@@ -354,9 +358,7 @@ void test_multiple_send_single_recv(int opfd, void *unused) {
     EXPECT_GE(send(opfd, send_mem, send_len, 0), 0);
     char recv_mem[total_len];
     memset(recv_mem, 0, total_len);
-    sleep(4);
     EXPECT_EQ(recv(opfd, recv_mem, total_len, 0), total_len);
-    /* Must use memcmp since all recv are placed in single buffer */
     EXPECT_STREQ(recv_mem, send_mem);
     EXPECT_STREQ(recv_mem+send_len, send_mem);
 }
@@ -372,7 +374,7 @@ void test_recv_partial(int opfd, void *unused) {
     EXPECT_NE(recv(opfd, recv_mem, strlen(test_str_first), 0), -1);
     EXPECT_STREQ(test_str_first, recv_mem);
     memset(recv_mem, 0, sizeof(recv_mem));
-    EXPECT_NE(recv(opfd, recv_mem, strlen(test_str_second), 0), -1);
+    EXPECT_NE(recv(opfd, recv_mem, strlen(test_str_second)+1, 0), -1);
     EXPECT_STREQ(test_str_second, recv_mem);
 }
 
@@ -559,6 +561,191 @@ void test_recvmsg_doom_async(int opfd, void *unused) {
     for(int i=0;i<msg_iovlen-1;i++)
         free(iov_base[i]);
 }
+
+/* Tests that a socket that has a TLS socket attached to it can still
+ * receive plaintext messages
+ */
+void test_origfd(int opfd, void *orig_con) {
+    struct test_args *args = (struct test_args *)orig_con;
+    SSL *ssl = args->ssl;
+    const char *test_str = "test_origfd";
+    int send_len = strlen(test_str)+1;
+    const char *str1 = "plain_message1";
+    int origfd = args->origfd;
+    char buf[send_len];
+    EXPECT_EQ(send(opfd, test_str, send_len, 0), send_len);
+    EXPECT_EQ(recv(opfd, buf, send_len, 0), send_len);
+    EXPECT_STREQ(buf, test_str);
+    recv(origfd, buf, strlen("rawr")+1, 0);
+    test_recv_small_decrypt(origfd, NULL);
+    test_sendmsg_single(origfd, NULL);
+    test_sendmsg_multiple(origfd, NULL);
+    test_sendmsg_multiple_scattered(origfd, NULL);
+    test_sendmsg_multiple_stress(origfd, NULL);
+    test_recvmsg_single(origfd, NULL);
+    test_recvmsg_multiple(origfd, NULL);
+    test_recv_partial(origfd, NULL);
+    test_recv_nonblock(origfd, NULL);
+    test_recv_peek(origfd, NULL);
+    test_recv_peek_multiple(origfd, NULL);
+    test_poll_POLLIN(origfd, NULL);
+    test_recv_max(origfd, NULL);
+    test_recvmsg_single_max(origfd, NULL);
+    //TODO: Check that a recvmsg here returns an error!
+}
+
+
+/*
+ * Tests that key renegotiation goes smoothly.
+ * In this simple test, the client "knows" that the
+ * server will renegotiate
+ */
+void test_renegotiate(int opfd, void *orig_con) {
+    struct test_args *args = (struct test_args *)orig_con;
+    SSL *ssl = args->ssl;
+    char const *str1 = "test_renegotiate";
+    char const *str2 = "renegotiated!";
+    char const *plain = "renegotiate!";
+    char buf[TLS_PAYLOAD_MAX_LEN];
+    int send_len = strlen(str1) + 1;
+    int origfd = args->origfd;
+    EVP_CIPHER_CTX * writeCtx = ssl->enc_write_ctx;
+    EVP_CIPHER_CTX * readCtx = ssl->enc_read_ctx;
+    EVP_AES_GCM_CTX* gcmWrite = (EVP_AES_GCM_CTX*) (writeCtx->cipher_data);
+    EVP_AES_GCM_CTX* gcmRead = (EVP_AES_GCM_CTX*) (readCtx->cipher_data);
+    unsigned char* writeKey = (unsigned char*) (gcmWrite->gcm.key);
+    unsigned char* readKey = (unsigned char*) (gcmRead->gcm.key);
+    char saved_writekey[16];
+    char saved_readkey[16];
+    memcpy(saved_writekey, writeKey, 16);
+    memcpy(saved_readkey, readKey, 16);
+    int ret;
+    int i = 0;
+    EXPECT_EQ(send(opfd, str1, send_len, 0), send_len);
+    do {
+        i++;
+//        EXPECT_EQ(send(opfd, str1, send_len, 0), send_len);
+    } while((ret = recv(opfd, buf, send_len, 0)) > 0);
+
+    //After a while, recv will return -EBADMSG. Check it.
+    EXPECT_EQ(ret, -1);
+    resetKeys(opfd, ssl);
+    ret = SSL_read(ssl, buf, sizeof(buf));
+    tls_attach(origfd, opfd, ssl);
+    EXPECT_EQ(send(opfd, str1, send_len, 0), send_len);
+    EXPECT_EQ(recv(opfd, buf, send_len, 0), send_len);
+    EXPECT_STREQ(buf, str1);
+
+    writeCtx = ssl->enc_write_ctx;
+    readCtx = ssl->enc_read_ctx;
+
+    gcmWrite = (EVP_AES_GCM_CTX*) (writeCtx->cipher_data);
+    gcmRead = (EVP_AES_GCM_CTX*) (readCtx->cipher_data);
+
+    writeKey = (unsigned char*) (gcmWrite->gcm.key);
+    readKey = (unsigned char*) (gcmRead->gcm.key);
+
+    EXPECT_NE(memcmp(saved_writekey, writeKey, 16), 0);
+    EXPECT_NE(memcmp(saved_readkey, readKey, 16), 0);
+    test_recv_small_decrypt(opfd, NULL);
+    test_sendmsg_single(opfd, NULL);
+    test_sendmsg_multiple(opfd, NULL);
+    test_sendmsg_multiple_scattered(opfd, NULL);
+    test_sendmsg_multiple_stress(opfd, NULL);
+    test_recvmsg_single(opfd, NULL);
+    test_recvmsg_multiple(opfd, NULL);
+    test_recv_partial(opfd, NULL);
+    test_recv_nonblock(opfd, NULL);
+    test_recv_peek(opfd, NULL);
+    test_recv_peek_multiple(opfd, NULL);
+    test_poll_POLLIN(opfd, NULL);
+    test_recv_max(opfd, NULL);
+    test_recvmsg_single_max(opfd, NULL);
+}
+
+/*
+ * Client sends a message, initiates a renegotiation and sends
+ * another message. Checks that both messages were exchanged
+ * correctly, keys have been changed, and ktls socket still
+ * works after
+ */
+void test_client_renegotiate(int opfd, void *orig_con) {
+    struct test_args *args = (struct test_args *)orig_con;
+    SSL *ssl = args->ssl;
+    char const *str1 = "test_renegotiate";
+    char const *str2 = "renegotiated!";
+    char const *plain = "renegotiate!";
+    char buf[TLS_PAYLOAD_MAX_LEN];
+    int send_len = strlen(str1) + 1;
+    int send_len2 = strlen(str2) + 1;
+    int origfd = args->origfd;
+    EVP_CIPHER_CTX * writeCtx = ssl->enc_write_ctx;
+    EVP_CIPHER_CTX * readCtx = ssl->enc_read_ctx;
+    EVP_AES_GCM_CTX* gcmWrite = (EVP_AES_GCM_CTX*) (writeCtx->cipher_data);
+    EVP_AES_GCM_CTX* gcmRead = (EVP_AES_GCM_CTX*) (readCtx->cipher_data);
+    unsigned char* writeKey = (unsigned char*) (gcmWrite->gcm.key);
+    unsigned char* readKey = (unsigned char*) (gcmRead->gcm.key);
+    char saved_writekey[16];
+    char saved_readkey[16];
+    memcpy(saved_writekey, writeKey, 16);
+    memcpy(saved_readkey, readKey, 16);
+
+    EXPECT_EQ(send(opfd, str1, send_len, 0), send_len);
+    EXPECT_EQ(recv(opfd, buf, send_len, 0), send_len);
+    EXPECT_STREQ(str1, buf);
+    recv(origfd, buf, strlen(plain)+1, 0);
+    EXPECT_STREQ(buf, plain);
+    resetKeys(opfd, ssl);
+    EXPECT_GE(SSL_renegotiate(ssl), 0);
+    EXPECT_GE(SSL_do_handshake(ssl), 0);
+    tls_attach(origfd, opfd, ssl);
+    EXPECT_EQ(send(opfd, str2, send_len2, 0), send_len2);
+    EXPECT_EQ(recv(opfd, buf, send_len2, 0), send_len2);
+    EXPECT_STREQ(buf, str2);
+
+    writeCtx = ssl->enc_write_ctx;
+    readCtx = ssl->enc_read_ctx;
+
+    gcmWrite = (EVP_AES_GCM_CTX*) (writeCtx->cipher_data);
+    gcmRead = (EVP_AES_GCM_CTX*) (readCtx->cipher_data);
+
+    writeKey = (unsigned char*) (gcmWrite->gcm.key);
+    readKey = (unsigned char*) (gcmRead->gcm.key);
+
+    EXPECT_NE(memcmp(saved_writekey, writeKey, 16), 0);
+    EXPECT_NE(memcmp(saved_readkey, readKey, 16), 0);
+    test_recv_small_decrypt(opfd, NULL);
+    test_sendmsg_single(opfd, NULL);
+    test_sendmsg_multiple(opfd, NULL);
+    test_sendmsg_multiple_scattered(opfd, NULL);
+    test_sendmsg_multiple_stress(opfd, NULL);
+    test_recvmsg_single(opfd, NULL);
+    test_recvmsg_multiple(opfd, NULL);
+    test_recv_partial(opfd, NULL);
+    test_recv_nonblock(opfd, NULL);
+    test_recv_peek(opfd, NULL);
+    test_recv_peek_multiple(opfd, NULL);
+    test_poll_POLLIN(opfd, NULL);
+    test_recv_max(opfd, NULL);
+    test_recvmsg_single_max(opfd, NULL);
+}
+
+void test_all(int opfd, void *args) {
+    test_recv_small_decrypt(opfd, args);
+    test_sendmsg_single(opfd, args);
+    test_sendmsg_multiple(opfd, args);
+    test_sendmsg_multiple_scattered(opfd, args);
+    test_sendmsg_multiple_stress(opfd, args);
+    test_recvmsg_single(opfd, args);
+    test_recvmsg_multiple(opfd, args);
+    test_recv_partial(opfd, args);
+    test_recv_nonblock(opfd, args);
+    test_recv_peek(opfd, args);
+    test_recv_peek_multiple(opfd, args);
+    test_poll_POLLIN(opfd, args);
+    test_recv_max(opfd, args);
+    test_recvmsg_single_max(opfd, args);
+}
 pthread_t server_thread;
 class MyTestSuite: public testing::Test {
 protected:
@@ -608,7 +795,7 @@ TEST_F(MyTestSuite, send_overflow)
     main_test_client(test_send_overflow);
 }
 
-TEST_F(MyTestSuite, read_small_decrypt)
+TEST_F(MyTestSuite, recv_small_decrypt)
 {
     main_test_client(test_recv_small_decrypt);
 }
@@ -641,13 +828,13 @@ TEST_F(MyTestSuite, sendmsg)
     main_test_client(test_sendmsg_single);
 }
 
-TEST_F(MyTestSuite, DISABLED_sendmsg_multiple_iovecs)
+TEST_F(MyTestSuite, sendmsg_multiple_iovecs)
 {
     /* Worked with iovec patch */
     main_test_client(test_sendmsg_multiple);
 }
 
-TEST_F(MyTestSuite, DISABLED_sendmsg_multiple_iovecs_scattered)
+TEST_F(MyTestSuite, sendmsg_multiple_iovecs_scattered)
 {
     /* Worked with iovec patch */
     main_test_client(test_sendmsg_multiple_scattered);
@@ -662,13 +849,20 @@ TEST_F(MyTestSuite, sendmsg_multiple_iovecs_stress)
 TEST_F(MyTestSuite, splice_from_pipe)
 {
     /* Tests sendpage implementation */
+    GTEST_TIMEOUT_BEGIN
     main_test_client(test_splice_from_pipe);
+    GTEST_TIMEOUT_END(5000);
+    pending_futures.push_back(std::move(asyncFuture));
+
 }
 
 TEST_F(MyTestSuite, splice_to_pipe)
 {
     /* Test splice_read implementation */
+    GTEST_TIMEOUT_BEGIN
     main_test_client(test_splice_to_pipe);
+    GTEST_TIMEOUT_END(5000);
+    pending_futures.push_back(std::move(asyncFuture));
 }
 
 TEST_F(MyTestSuite, DISABLED_sendmmsg)
@@ -682,13 +876,13 @@ TEST_F(MyTestSuite, recvmsg_single)
     main_test_client(test_recvmsg_single);
 }
 
-TEST_F(MyTestSuite, DISABLED_recvmsg_multiple)
+TEST_F(MyTestSuite, recvmsg_multiple)
 {
     /* Works with iovec patch */
     main_test_client(test_recvmsg_multiple);
 }
 
-TEST_F(MyTestSuite, DISABLED_recvmsg_multiple_async)
+TEST_F(MyTestSuite, recvmsg_multiple_async)
 {
     /* Works with iovec patch */
     main_test_client(test_recvmsg_multiple_async);
@@ -707,7 +901,7 @@ TEST_F(MyTestSuite, multiple_send_single_recv)
 }
 
 
-TEST_F(MyTestSuite, DISABLED_recv_partial)
+TEST_F(MyTestSuite, recv_partial)
 {
     main_test_client(test_recv_partial);
 }
@@ -717,7 +911,7 @@ TEST_F(MyTestSuite, sockopt)
     main_test_client(test_sockopt);
 }
 
-TEST_F(MyTestSuite, DISABLED_recv_nonblock)
+TEST_F(MyTestSuite, recv_nonblock)
 {
     GTEST_TIMEOUT_BEGIN
     main_test_client(test_recv_nonblock);
@@ -725,7 +919,7 @@ TEST_F(MyTestSuite, DISABLED_recv_nonblock)
     pending_futures.push_back(std::move(asyncFuture));
 }
 
-TEST_F(MyTestSuite, DISABLED_recv_peek)
+TEST_F(MyTestSuite, recv_peek)
 {
     GTEST_TIMEOUT_BEGIN
     main_test_client(test_recv_peek);
@@ -733,7 +927,7 @@ TEST_F(MyTestSuite, DISABLED_recv_peek)
     pending_futures.push_back(std::move(asyncFuture));
 }
 
-TEST_F(MyTestSuite, DISABLED_recv_peek_multiple)
+TEST_F(MyTestSuite, recv_peek_multiple)
 {
     GTEST_TIMEOUT_BEGIN
     main_test_client(test_recv_peek_multiple);
@@ -787,24 +981,44 @@ TEST_F(MyTestSuite, recv_async)
     main_test_client(test_recv_async);
 }
 
-TEST_F(MyTestSuite, recv_doom_noasync)
+TEST_F(MyTestSuite, DISABLED_recv_doom_noasync)
 {
     main_test_client(test_recv_doom_noasync, server_delay);
 }
 
-TEST_F(MyTestSuite, recv_doom_async)
+TEST_F(MyTestSuite, DISABLED_recv_doom_async)
 {
     main_test_client(test_recv_doom_async);
 }
 
-TEST_F(MyTestSuite, recvmsg_doom_noasync)
+TEST_F(MyTestSuite, DISABLED_recvmsg_doom_noasync)
 {
     main_test_client(test_recvmsg_doom_noasync, server_delay);
 }
 
-TEST_F(MyTestSuite, recvmsg_doom_async)
+TEST_F(MyTestSuite, DISABLED_recvmsg_doom_async)
 {
     main_test_client(test_recvmsg_doom_async);
+}
+
+TEST_F(MyTestSuite, origfd)
+{
+    main_test_client(test_origfd, server_origfd);
+}
+
+TEST_F(MyTestSuite, renegotiate)
+{
+    main_test_client(test_renegotiate, server_renegotiate);
+}
+
+TEST_F(MyTestSuite, client_renegotiate)
+{
+    main_test_client(test_client_renegotiate, server_client_renegotiate);
+}
+
+TEST_F(MyTestSuite, all)
+{
+    main_test_client(test_all);
 }
 
 /* These tests run on a plaintext server */
@@ -824,7 +1038,6 @@ TEST_F(MyTestSuite, ref)
     ref_test_client(test_recv_peek);
     ref_test_client(test_recv_peek_multiple);
     ref_test_client(test_poll_POLLIN);
-    ref_test_client(test_unbinded);
     ref_test_client(test_send_max);
     ref_test_client(test_recv_max);
     ref_test_client(test_recvmsg_single_max);

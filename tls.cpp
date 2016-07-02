@@ -10,54 +10,6 @@ unsigned int buf_size;
 pthread_cond_t server_cond;
 pthread_mutex_t server_lock;
 int server_up;
-/* Opaque OpenSSL structures to fetch keys */
-#define u64 uint64_t
-#define u32 uint32_t
-#define u8 uint8_t
-typedef struct {
-    u64 hi, lo;
-} u128;
-
-typedef struct {
-    /* Following 6 names follow names in GCM specification */
-    union {
-        u64 u[2];
-        u32 d[4];
-        u8 c[16];
-        size_t t[16 / sizeof(size_t)];
-    } Yi, EKi, EK0, len, Xi, H;
-    /*
-     * Relative position of Xi, H and pre-computed Htable is used in some
-     * assembler modules, i.e. don't change the order!
-     */
-#if TABLE_BITS==8
-    u128 Htable[256];
-#else
-    u128 Htable[16];
-    void (*gmult)(u64 Xi[2], const u128 Htable[16]);
-    void
-    (*ghash)(u64 Xi[2], const u128 Htable[16], const u8 *inp, size_t len);
-#endif
-    unsigned int mres, ares;
-    block128_f block;
-    void *key;
-} gcm128_context_alias;
-
-typedef struct {
-    union {
-        double align;
-        AES_KEY ks;
-    } ks; /* AES key schedule to use */
-    int key_set; /* Set if key initialised */
-    int iv_set; /* Set if an iv is set */
-    gcm128_context_alias gcm;
-    unsigned char *iv; /* Temporary IV store */
-    int ivlen; /* IV length */
-    int taglen;
-    int iv_gen; /* It is OK to generate IVs */
-    int tls_aad_len; /* TLS AAD length */
-    ctr128_f ctr;
-} EVP_AES_GCM_CTX;
 
 /* AF_ALG defines not in linux headers */
 /*
@@ -166,7 +118,7 @@ SSL_CTX* InitServerCTX(void) {
     SSL_CTX *ctx;
 
     /* create new context from method */
-    ctx = SSL_CTX_new(SSLv23_server_method());
+    ctx = SSL_CTX_new(TLSv1_2_method());
 
     if (ctx == nullptr) {
         ERR_print_errors_fp(stderr);
@@ -193,22 +145,40 @@ void LoadCertificates(SSL_CTX* ctx, char const *CertFile, char const *KeyFile) {
     }
 }
 
-void main_test_client(tls_test test, int type) {
 
-    SSL_CTX *ctx;
-    SSL *ssl;
-    int server = 0;
-    if ((ctx = SSL_CTX_new(SSLv23_client_method())) == nullptr)
-        printf("Unable to create a new SSL context structure.\n");
-    SSL_CTX_set_options(ctx, SSL_OP_NO_SSLv2);
-    SSL_CTX_set_cipher_list(ctx, "ECDH-ECDSA-AES128-GCM-SHA256");
-    ssl = SSL_new(ctx);
-    server = create_socket(port+2*type);
-    SSL_set_fd(ssl, server);
-    SSL_connect(ssl);
-    int opfd = socket(AF_KTLS, SOCK_STREAM, 0);
+void resetKeys(int opfd, SSL *ssl) {
+    EVP_CIPHER_CTX * writeCtx = ssl->enc_write_ctx;
+    EVP_CIPHER_CTX * readCtx = ssl->enc_read_ctx;
+
+    EVP_AES_GCM_CTX* gcmWrite = (EVP_AES_GCM_CTX*)(writeCtx->cipher_data);
+    EVP_AES_GCM_CTX* gcmRead = (EVP_AES_GCM_CTX*)(readCtx->cipher_data);
+
+    unsigned char* writeKey = (unsigned char*)(gcmWrite->gcm.key);
+    unsigned char* readKey = (unsigned char*)(gcmRead->gcm.key);
+
+    unsigned char* writeIV = gcmWrite->iv;
+    unsigned char* readIV = gcmRead->iv;
+
+    unsigned char* readSeqNum = ssl->s3->read_sequence;
+
+    unsigned char* writeSeqNum = ssl->s3->write_sequence;
+    int err = 0;
+    socklen_t optlen = 8;
+    err = getsockopt(opfd, AF_KTLS, KTLS_GET_IV_RECV, readSeqNum, &optlen);
+    if (err < 0) {
+      perror("failed to get send key on AF_KTLS socket using setsockopt(2)");
+    }
+
+    err = getsockopt(opfd, AF_KTLS, KTLS_GET_IV_SEND, writeSeqNum, &optlen);
+    if (err < 0) {
+      perror("failed to get send key on AF_KTLS socket using setsockopt(2)");
+    }
+
+}
+
+void tls_attach(int origfd, int opfd,  SSL *ssl) {
     struct sockaddr_ktls sa = { .sa_cipher = KTLS_CIPHER_AES_GCM_128,
-            .sa_socket = server, .sa_version = KTLS_VERSION_1_2};
+            .sa_socket = origfd, .sa_version = KTLS_VERSION_1_2};
 
     bind(opfd, (struct sockaddr *) &sa, sizeof(sa));
     EVP_CIPHER_CTX * writeCtx = ssl->enc_write_ctx;
@@ -255,10 +225,31 @@ void main_test_client(tls_test test, int type) {
         perror("AF_ALG: set read key failed\n");
         exit(EXIT_FAILURE);
     }
-    test(opfd, nullptr);
+
+}
+void main_test_client(tls_test test, int type) {
+
+    SSL_CTX *ctx;
+    SSL *ssl;
+    int origfd = 0;
+    if ((ctx = SSL_CTX_new(TLSv1_2_method())) == nullptr)
+        printf("Unable to create a new SSL context structure.\n");
+    SSL_CTX_set_options(ctx, SSL_OP_NO_SSLv2);
+    SSL_CTX_set_cipher_list(ctx, "ECDH-ECDSA-AES128-GCM-SHA256");
+    ssl = SSL_new(ctx);
+    origfd = create_socket(port+2*type);
+    SSL_set_fd(ssl, origfd);
+    SSL_connect(ssl);
+    int opfd = socket(AF_KTLS, SOCK_STREAM, 0);
+
+    tls_attach(origfd, opfd, ssl);
+    struct test_args args;
+    args.origfd = origfd;
+    args.ssl = ssl;
+    test(opfd, &args);
 
     SSL_free(ssl);
-    close(server);
+    close(origfd);
     SSL_CTX_free(ctx);
 }
 void *Servlet(void *args)/* Serve the connection -- threadable */
@@ -270,6 +261,7 @@ void *Servlet(void *args)/* Serve the connection -- threadable */
     struct server_args serv_args;
     serv_args.ssl = ssl;
     serv_args.type = tls_server;
+    serv_args.client = sargs->client;
     SSL_accept(ssl);
     tls_server_funcs[type] (&serv_args);
     free(args);
