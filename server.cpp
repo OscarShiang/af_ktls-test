@@ -20,6 +20,7 @@ void serve_echo(void *args) {
 
         bytes = type == tls_server?SSL_read(ssl, buf, sizeof(buf)):
                 recv(client, buf, TLS_PAYLOAD_MAX_LEN, 0);
+
         if (bytes < 0) {
             break;
         }

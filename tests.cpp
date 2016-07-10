@@ -9,6 +9,7 @@
 #include "lib.hpp"
 #include "tls.hpp"
 #include "server.hpp"
+#include <openssl/ssl.h>
 
 extern pthread_cond_t server_cond;
 extern pthread_mutex_t server_lock;
@@ -72,7 +73,6 @@ void test_recv_small_decrypt(int opfd, void *unused) {
         EXPECT_STREQ(test_str, buf);
         memset(buf, 0, sizeof(buf));
     }
-
 }
 
 void test_send_overflow(int opfd, void *unused) {
@@ -753,8 +753,9 @@ protected:
         struct sigaction sa;
         sa.sa_handler = SIG_IGN;
         sigaction(SIGPIPE, &sa, nullptr);
-        SSL_library_init();
-        OpenSSL_add_all_algorithms();
+//        SSL_library_init();
+//        OpenSSL_add_all_algorithms();
+        OPENSSL_init_ssl(OPENSSL_INIT_LOAD_CONFIG, NULL);
         ERR_load_BIO_strings();
         ERR_load_crypto_strings();
         SSL_load_error_strings();/* load all error messages */
@@ -767,6 +768,9 @@ protected:
             thread t2(ref_server, i);
             t2.detach();
         }
+        thread t3(start_server);
+        t3.detach();
+        sleep(2);
         pthread_mutex_lock(&server_lock);
         while (server_up < 0)
             pthread_cond_wait(&server_cond, &server_lock);
@@ -1019,6 +1023,11 @@ TEST_F(MyTestSuite, client_renegotiate)
 TEST_F(MyTestSuite, all)
 {
     main_test_client(test_all);
+}
+
+TEST_F(MyTestSuite, DTLS_recv_small_encrypt)
+{
+    start_client(test_recv_small_decrypt);
 }
 
 /* These tests run on a plaintext server */

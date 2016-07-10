@@ -41,6 +41,7 @@
 #include <openssl/modes.h>
 #include <openssl/aes.h>
 #include "server.hpp"
+#include <openssl/rand.h>
 
 /* Opaque OpenSSL structures to fetch keys */
 #define u64 uint64_t
@@ -104,4 +105,6 @@ void ref_server(int);
 char * prepare_msghdr(struct msghdr *);
 void tls_attach(int, int, SSL *);
 void resetKeys(int, SSL *);
+void start_client(tls_test test);
+void start_server(void);
 #endif /* TLS_HPP_ */
