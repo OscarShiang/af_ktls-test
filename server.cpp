@@ -113,7 +113,7 @@ void serve_renegotiate(void *args) {
     if(SSL_do_handshake(ssl) <= 0){
         printf("SSL_do_handshake1() failed\n");
     }
-    ssl->state = SSL_ST_ACCEPT;
+//    ssl->state = SSL_ST_ACCEPT;
     int ret = SSL_do_handshake(ssl);
     if (ret <= 0) {
         printf("SSL_do_handshake2() failed\n");

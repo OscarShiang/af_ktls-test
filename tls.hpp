@@ -33,15 +33,17 @@
 #include <arpa/inet.h>
 #include <openssl/bio.h>
 #include <string.h>
-#include <openssl/ssl.h>
-#include <openssl/err.h>
-#include <openssl/pem.h>
-#include <openssl/x509.h>
-#include <openssl/x509_vfy.h>
-#include <openssl/modes.h>
-#include <openssl/aes.h>
+#include "openssl/ssl.h"
+#include "openssl/err.h"
+#include "openssl/pem.h"
+#include "openssl/x509.h"
+#include "openssl/x509_vfy.h"
+#include "openssl/modes.h"
+#include "openssl/aes.h"
 #include "server.hpp"
-
+#include "openssl/ossl_typ.h"
+#include "openssl/ssl_locl.h"
+#include "openssl/evp_locl.h"
 /* Opaque OpenSSL structures to fetch keys */
 #define u64 uint64_t
 #define u32 uint32_t
@@ -90,6 +92,32 @@ typedef struct {
     int tls_aad_len; /* TLS AAD length */
     ctr128_f ctr;
 } EVP_AES_GCM_CTX;
+
+#define POLY1305_BLOCK_SIZE 16
+
+#define CHACHA_KEY_SIZE         32
+#define CHACHA_CTR_SIZE         16
+#define CHACHA_BLK_SIZE         64
+
+typedef struct {
+    union {
+        double align;   /* this ensures even sizeof(EVP_CHACHA_KEY)%8==0 */
+        unsigned int d[CHACHA_KEY_SIZE / 4];
+    } key;
+    unsigned int  counter[CHACHA_CTR_SIZE / 4];
+    unsigned char buf[CHACHA_BLK_SIZE];
+    unsigned int  partial_len;
+} EVP_CHACHA_KEY;
+
+
+typedef struct {
+    EVP_CHACHA_KEY key;
+    unsigned int nonce[12/4];
+    unsigned char tag[POLY1305_BLOCK_SIZE];
+    struct { uint64_t aad, text; } len;
+    int aad, mac_inited, tag_len, nonce_len;
+    size_t tls_payload_length;
+} EVP_CHACHA_AEAD_CTX;
 
 typedef void (* tls_test)(int opfd, void *data);
 

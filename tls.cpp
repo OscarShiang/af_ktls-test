@@ -10,7 +10,8 @@ unsigned int buf_size;
 pthread_cond_t server_cond;
 pthread_mutex_t server_lock;
 int server_up;
-
+//char *cipher = "ECDHE-ECDSA-AES128-GCM-SHA256";
+const char *cipher = "ECDHE-ECDSA-CHACHA20-POLY1305";
 /* AF_ALG defines not in linux headers */
 /*
  * Just for testing some unused family.
@@ -118,7 +119,7 @@ SSL_CTX* InitServerCTX(void) {
     SSL_CTX *ctx;
 
     /* create new context from method */
-    ctx = SSL_CTX_new(TLSv1_2_method());
+    ctx = SSL_CTX_new(TLS_server_method());
 
     if (ctx == nullptr) {
         ERR_print_errors_fp(stderr);
@@ -159,9 +160,9 @@ void resetKeys(int opfd, SSL *ssl) {
     unsigned char* writeIV = gcmWrite->iv;
     unsigned char* readIV = gcmRead->iv;
 
-    unsigned char* readSeqNum = ssl->s3->read_sequence;
+    unsigned char* readSeqNum = ssl->s3->read_mac_secret;
 
-    unsigned char* writeSeqNum = ssl->s3->write_sequence;
+    unsigned char* writeSeqNum = ssl->s3->write_mac_secret;
     int err = 0;
     socklen_t optlen = 8;
     err = getsockopt(opfd, AF_KTLS, KTLS_GET_IV_RECV, readSeqNum, &optlen);
@@ -177,52 +178,53 @@ void resetKeys(int opfd, SSL *ssl) {
 }
 
 void tls_attach(int origfd, int opfd,  SSL *ssl) {
+
     struct sockaddr_ktls sa = { .sa_cipher = KTLS_CIPHER_AES_GCM_128,
             .sa_socket = origfd, .sa_version = KTLS_VERSION_1_2};
 
     bind(opfd, (struct sockaddr *) &sa, sizeof(sa));
-    EVP_CIPHER_CTX * writeCtx = ssl->enc_write_ctx;
-    EVP_CIPHER_CTX * readCtx = ssl->enc_read_ctx;
+    EVP_CIPHER_CTX *writeCtx = ssl->enc_write_ctx;
+    EVP_CIPHER_CTX *readCtx = ssl->enc_read_ctx;
 
-    EVP_AES_GCM_CTX* gcmWrite = (EVP_AES_GCM_CTX*) (writeCtx->cipher_data);
-    EVP_AES_GCM_CTX* gcmRead = (EVP_AES_GCM_CTX*) (readCtx->cipher_data);
+    EVP_CHACHA_AEAD_CTX *gcmWrite = (EVP_CHACHA_AEAD_CTX *) (writeCtx->cipher_data);
+    EVP_CHACHA_AEAD_CTX *gcmRead = (EVP_CHACHA_AEAD_CTX *) (readCtx->cipher_data);
 
-    unsigned char* writeKey = (unsigned char*) (gcmWrite->gcm.key);
-    unsigned char* readKey = (unsigned char*) (gcmRead->gcm.key);
+    unsigned char* writeKey = (unsigned char*) (&gcmWrite->key.key.d);
+    unsigned char* readKey = (unsigned char*) (&gcmRead->key.key.d);
 
-    unsigned char* writeIV = gcmWrite->iv;
-    unsigned char* readIV = gcmRead->iv;
+    unsigned char* writeIV = (unsigned char *)&gcmWrite->nonce;
+    unsigned char* readIV = (unsigned char *)&gcmRead->nonce;
 
-    if (setsockopt(opfd, AF_KTLS, KTLS_SET_KEY_SEND, writeKey, 16)) {
+    if (setsockopt(opfd, AF_KTLS, KTLS_SET_KEY_SEND, writeKey, CHACHA_KEY_SIZE)) {
         perror("AF_ALG: set write key failed\n");
         exit(EXIT_FAILURE);
     }
 
-    if (setsockopt(opfd, AF_KTLS, KTLS_SET_KEY_RECV, readKey, 16)) {
+    if (setsockopt(opfd, AF_KTLS, KTLS_SET_KEY_RECV, readKey, CHACHA_KEY_SIZE)) {
         perror("AF_ALG: set read key failed\n");
         exit(EXIT_FAILURE);
     }
 
     if (setsockopt(opfd, AF_KTLS, KTLS_SET_SALT_SEND, writeIV, 4)) {
-        perror("AF_ALG: set write key failed\n");
+        perror("AF_ALG: set write IV failed\n");
         exit(EXIT_FAILURE);
     }
 
     if (setsockopt(opfd, AF_KTLS, KTLS_SET_SALT_RECV, readIV, 4)) {
-        perror("AF_ALG: set read key failed\n");
+        perror("AF_ALG: set read IV failed\n");
         exit(EXIT_FAILURE);
     }
-    unsigned char* writeSeqNum = ssl->s3->write_sequence;
+    unsigned char* writeSeqNum = ssl->rlayer.write_sequence;
 
     if (setsockopt(opfd, AF_KTLS, KTLS_SET_IV_SEND, writeSeqNum, 8)) {
-        perror("AF_ALG: set write key failed\n");
+        perror("AF_ALG: set write seq failed\n");
         exit(EXIT_FAILURE);
     }
 
-    unsigned char* readSeqNum = ssl->s3->read_sequence;
+    unsigned char* readSeqNum = ssl->rlayer.write_sequence;
 
     if (setsockopt(opfd, AF_KTLS, KTLS_SET_IV_RECV, readSeqNum, 8)) {
-        perror("AF_ALG: set read key failed\n");
+        perror("AF_ALG: set read seq failed\n");
         exit(EXIT_FAILURE);
     }
 
@@ -232,14 +234,22 @@ void main_test_client(tls_test test, int type) {
     SSL_CTX *ctx;
     SSL *ssl;
     int origfd = 0;
-    if ((ctx = SSL_CTX_new(TLSv1_2_method())) == nullptr)
+    if ((ctx = SSL_CTX_new(TLS_client_method())) == nullptr)
         printf("Unable to create a new SSL context structure.\n");
     SSL_CTX_set_options(ctx, SSL_OP_NO_SSLv2);
-    SSL_CTX_set_cipher_list(ctx, "ECDH-ECDSA-AES128-GCM-SHA256");
+    if (SSL_CTX_set_cipher_list(ctx, cipher) == 0)
+        printf("Cipher selection failed!\n");
     ssl = SSL_new(ctx);
     origfd = create_socket(port+2*type);
     SSL_set_fd(ssl, origfd);
-    SSL_connect(ssl);
+    int ret;
+    if ((ret = SSL_connect(ssl)) < 0) {
+        char buf[256];
+        printf("Connection failed!\n");
+        printf("%d\n", SSL_get_error(ssl, ret));
+        printf("%s\n", ERR_error_string(ERR_get_error(), buf));
+    }
+
     int opfd = socket(AF_KTLS, SOCK_STREAM, 0);
 
     tls_attach(origfd, opfd, ssl);
@@ -277,7 +287,8 @@ void main_server(int type) {
 
     ctx = InitServerCTX();/* initialize SSL */
     LoadCertificates(ctx, "ca.crt", "ca.pem");/* load certs */
-    SSL_CTX_set_cipher_list(ctx, "ECDH-ECDSA-AES128-GCM-SHA256");
+    if (SSL_CTX_set_cipher_list(ctx, cipher) == 0)
+        printf("Cipher selection failed!\n");
     int server = OpenListener(port+(2*type));/* create server socket */
     pthread_mutex_lock(&server_lock);
     server_up++;
