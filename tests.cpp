@@ -594,7 +594,6 @@ void test_origfd(int opfd, void *orig_con) {
     //TODO: Check that a recvmsg here returns an error!
 }
 
-
 /*
  * Tests that key renegotiation goes smoothly.
  * In this simple test, the client "knows" that the
@@ -693,8 +692,6 @@ void test_client_renegotiate(int opfd, void *orig_con) {
     EXPECT_EQ(send(opfd, str1, send_len, 0), send_len);
     EXPECT_EQ(recv(opfd, buf, send_len, 0), send_len);
     EXPECT_STREQ(str1, buf);
-    recv(origfd, buf, strlen(plain)+1, 0);
-    EXPECT_STREQ(buf, plain);
     resetKeys(opfd, ssl);
     EXPECT_GE(SSL_renegotiate(ssl), 0);
     EXPECT_GE(SSL_do_handshake(ssl), 0);

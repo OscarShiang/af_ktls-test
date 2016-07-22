@@ -132,7 +132,6 @@ void serve_client_renegotiate(void *args) {
     const char *str = "renegotiate!";
     bytes = SSL_read(ssl, buf, sizeof(buf));
     SSL_write(ssl, buf, bytes);
-    send(client, str, strlen(str)+1, 0);
     SSL_read(ssl, buf, sizeof(buf));
     serve_echo(args);
 }
