@@ -31,6 +31,7 @@ int server_up;
 #define KTLS_SET_KEY_SEND       5
 #define KTLS_SET_SALT_SEND      6
 #define KTLS_SET_MTU            7
+#define KTLS_UNATTACH           8
 
 /*
  * setsockopt() optnames
@@ -235,6 +236,13 @@ void tls_attach(int origfd, int opfd,  SSL *ssl) {
     }
 
 }
+
+void tls_unattach(int opfd) {
+    if (setsockopt(opfd, AF_KTLS, KTLS_UNATTACH, 0, 0)) {
+        perror("unattach failed\n");
+    }
+}
+
 void main_test_client(tls_test test, int type) {
 
     SSL_CTX *ctx;
@@ -256,7 +264,17 @@ void main_test_client(tls_test test, int type) {
     args.ssl = ssl;
     test(opfd, &args);
     resetKeys(opfd, ssl);
-    SSL_shutdown_helper(ssl);
+    tls_unattach(opfd);
+    close(opfd);
+    int rc = SSL_shutdown(ssl);
+    if (rc == 0) {
+        printf("Got shutdown reply from server \n");
+        rc = SSL_shutdown(ssl);
+    }
+    if (rc < 0) {
+        printf("SSL Shutdown failed for client\n");
+    }
+    //SSL_shutdown_helper(ssl);
     SSL_free(ssl);
     close(origfd);
     SSL_CTX_free(ctx);
