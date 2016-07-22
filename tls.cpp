@@ -145,7 +145,15 @@ void LoadCertificates(SSL_CTX* ctx, char const *CertFile, char const *KeyFile) {
     }
 }
 
-
+void SSL_shutdown_helper(SSL *ssl) {
+    int rc = SSL_shutdown(ssl);
+    if (rc == 0) {
+        rc = SSL_shutdown(ssl);
+    }
+    if (rc < 0) {
+        printf("SSL Shutdown failed\n");
+    }
+}
 void resetKeys(int opfd, SSL *ssl) {
     EVP_CIPHER_CTX * writeCtx = ssl->enc_write_ctx;
     EVP_CIPHER_CTX * readCtx = ssl->enc_read_ctx;
@@ -247,7 +255,8 @@ void main_test_client(tls_test test, int type) {
     args.origfd = origfd;
     args.ssl = ssl;
     test(opfd, &args);
-
+    resetKeys(opfd, ssl);
+    SSL_shutdown_helper(ssl);
     SSL_free(ssl);
     close(origfd);
     SSL_CTX_free(ctx);
@@ -264,6 +273,7 @@ void *Servlet(void *args)/* Serve the connection -- threadable */
     serv_args.client = sargs->client;
     SSL_accept(ssl);
     tls_server_funcs[type] (&serv_args);
+    SSL_shutdown_helper(ssl);
     free(args);
     sd = SSL_get_fd(ssl);/* get socket connection */
     SSL_free(ssl);/* release SSL state */
