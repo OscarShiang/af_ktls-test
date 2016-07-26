@@ -266,15 +266,7 @@ void main_test_client(tls_test test, int type) {
     resetKeys(opfd, ssl);
     tls_unattach(opfd);
     close(opfd);
-    int rc = SSL_shutdown(ssl);
-    if (rc == 0) {
-        printf("Got shutdown reply from server \n");
-        rc = SSL_shutdown(ssl);
-    }
-    if (rc < 0) {
-        printf("SSL Shutdown failed for client\n");
-    }
-    //SSL_shutdown_helper(ssl);
+    SSL_shutdown_helper(ssl);
     SSL_free(ssl);
     close(origfd);
     SSL_CTX_free(ctx);
