@@ -340,6 +340,7 @@ void test_single_send_multiple_recv(int opfd, void *unused) {
     sleep(2);
     EXPECT_NE(recv(opfd, recv_mem, send_len, 0), -1);
     EXPECT_STREQ(recv_mem, send_mem);
+    memset(recv_mem, 0, send_len);
     EXPECT_NE(recv(opfd, recv_mem, send_len, 0), -1);
     EXPECT_STREQ(recv_mem, send_mem);
 
