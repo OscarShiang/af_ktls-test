@@ -189,7 +189,10 @@ void tls_attach(int origfd, int opfd,  SSL *ssl) {
     struct sockaddr_ktls sa = { .sa_cipher = KTLS_CIPHER_AES_GCM_128,
             .sa_socket = origfd, .sa_version = KTLS_VERSION_1_2};
 
-    bind(opfd, (struct sockaddr *) &sa, sizeof(sa));
+    if (bind(opfd, (struct sockaddr *) &sa, sizeof(sa)) < 0) {
+        perror("AF_ALG: bind failed\n");
+        exit(EXIT_FAILURE);
+    }
     EVP_CIPHER_CTX * writeCtx = ssl->enc_write_ctx;
     EVP_CIPHER_CTX * readCtx = ssl->enc_read_ctx;
 
@@ -257,7 +260,10 @@ void main_test_client(tls_test test, int type) {
     SSL_set_fd(ssl, origfd);
     SSL_connect(ssl);
     int opfd = socket(AF_KTLS, SOCK_STREAM, 0);
-
+    if (opfd < 0) {
+        perror("AF_ALG: create socket failed\n");
+        exit(EXIT_FAILURE);
+    }
     tls_attach(origfd, opfd, ssl);
     struct test_args args;
     args.origfd = origfd;
