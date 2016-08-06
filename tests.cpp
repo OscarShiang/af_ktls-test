@@ -728,6 +728,24 @@ void test_client_renegotiate(int opfd, void *orig_con) {
     test_recvmsg_single_max(opfd, NULL);
 }
 
+void test_receive_full(int opfd, void *unused) {
+    unsigned int num_packets = 50;
+    char *send_mem[num_packets];
+    for(int i=0;i<num_packets;i++) {
+        send_mem[i] = (char *)malloc(TLS_PAYLOAD_MAX_LEN);
+        gen_random(send_mem[i], TLS_PAYLOAD_MAX_LEN);
+        EXPECT_EQ(send(opfd, send_mem[i], TLS_PAYLOAD_MAX_LEN, 0), TLS_PAYLOAD_MAX_LEN);
+    }
+    char *recv_mem[num_packets];
+    for(int i=0;i<num_packets;i++) {
+        recv_mem[i] = (char *)malloc(TLS_PAYLOAD_MAX_LEN);
+        EXPECT_EQ(recv(opfd, recv_mem[i], TLS_PAYLOAD_MAX_LEN, 0), TLS_PAYLOAD_MAX_LEN);
+        EXPECT_STREQ(send_mem[i], recv_mem[i]);
+        free(send_mem[i]);
+        free(recv_mem[i]);
+    }
+}
+
 void test_all(int opfd, void *args) {
     test_recv_small_decrypt(opfd, args);
     test_sendmsg_single(opfd, args);
@@ -1014,6 +1032,11 @@ TEST_F(MyTestSuite, client_renegotiate)
     main_test_client(test_client_renegotiate, server_client_renegotiate);
 }
 
+TEST_F(MyTestSuite, receive_full)
+{
+    main_test_client(test_receive_full);
+}
+
 TEST_F(MyTestSuite, all)
 {
     main_test_client(test_all);
@@ -1045,4 +1068,5 @@ TEST_F(MyTestSuite, ref)
     ref_test_client(test_single_send_multiple_recv, server_send_twice);
     ref_test_client(test_poll_POLLOUT);
     ref_test_client(test_recv_wait, server_delay);
+    ref_test_client(test_receive_full);
 }
